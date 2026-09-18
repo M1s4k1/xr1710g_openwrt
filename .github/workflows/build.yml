@@ -1,0 +1,188 @@
+name: build
+
+# XR1710G 固件构建（GitHub Actions）
+#
+# 为什么走 CI：全量构建 1–3 小时且吃满 CPU，用 CI 避免占用本地机器；
+#   CI 每次全新环境，配合 ccache 重复构建显著加速。
+#
+# 仓库定位：本仓库是叠加层（相对 genshanxinli/xr1710g-openwrt 的差异），
+#   不含 OpenWrt 源码。CI 流水线组合三份物料：
+#     ① 本仓库（mine）：local/ 规则 + 9501/9601/9602 本地自研补丁
+#     ② 上游叠加层（upstream）：genshanxinli/xr1710g-openwrt 补丁主体
+#     ③ OpenWrt 源码树（openwrt）：构建基座
+#   流程：stage.sh 合成 .stage/ → audit 校验 → 编译出 .itb 固件 → 上传产物与 Release。
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: '档位：stock=func 正式档（103 活动，推荐）/ v1-safe=保守档（63 活动）'
+        default: 'stock'
+        required: true
+        type: choice
+        options:
+          - stock
+          - v1-safe
+      openwrt_ref:
+        description: 'OpenWrt 源码树 ref（sha/branch；默认已验证组合）'
+        default: 'f1230284c6a3136df455747c21a3df65df9b2692'
+        required: true
+      upstream_ref:
+        description: '上游叠加层 ref（默认 func 基线快照）'
+        default: '1fea1e59e4baccabfcf751ab6a57d78a1dfdd16a'
+        required: true
+      create_release:
+        description: '构建成功后是否自动创建 GitHub Release'
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PROFILE: ${{ github.event.inputs.profile || 'stock' }}
+      TREE: ${{ github.workspace }}/openwrt
+      UPSTREAM_DIR: ${{ github.workspace }}/upstream
+    steps:
+      - name: 清理磁盘空间（释放 ~35GB 冗余预装套件）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: 取出本仓库（叠加层）
+        uses: actions/checkout@v4
+        with:
+          path: mine
+
+      - name: 取上游叠加层（pin ref）
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/genshanxinli/xr1710g-openwrt.git "$UPSTREAM_DIR"
+          cd "$UPSTREAM_DIR"
+          git checkout -q "${{ github.event.inputs.upstream_ref || '1fea1e59e4baccabfcf751ab6a57d78a1dfdd16a' }}"
+          echo "Upstream commit: $(git rev-parse --short HEAD)"
+
+      - name: 克隆 OpenWrt 源码树（pin ref）
+        run: |
+          set -euo pipefail
+          git clone https://github.com/openwrt/openwrt.git "$TREE"
+          cd "$TREE"
+          git checkout -q "${{ github.event.inputs.openwrt_ref || 'f1230284c6a3136df455747c21a3df65df9b2692' }}"
+          echo "OpenWrt commit: $(git rev-parse --short HEAD)"
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget time
+
+      - name: ccache 缓存配置
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: openwrt-${{ env.PROFILE }}
+          restore-keys: openwrt-${{ env.PROFILE }}
+          max-size: 3G
+
+      - name: stage 合成（上游 + 本仓库差异）
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          export LANG=C
+          STAGE_TIER="func"
+          [[ "$PROFILE" == "v1-safe" ]] && STAGE_TIER="v1-safe"
+          bash "$GITHUB_WORKSPACE/mine/scripts/stage.sh" \
+            --upstream "$UPSTREAM_DIR" \
+            --out "$GITHUB_WORKSPACE/.stage" \
+            --tier "$STAGE_TIER" \
+            --disable-oc 1
+
+      - name: 规则与配置自检 (audit-local)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/mine"
+          bash scripts/audit-local.sh --upstream "$UPSTREAM_DIR"
+
+      - name: 配置 ccache 到构建流程
+        run: |
+          set -euo pipefail
+          # 在 audit-config 之后、make 之前注入 CONFIG_CCACHE=y
+          # （规避 audit-config 审计失败与 kconfig 在 DEVEL=n 时的被动清除）
+          python3 -c "
+          bf = '$GITHUB_WORKSPACE/.stage/scripts/build.sh'
+          with open(bf, 'r') as f:
+              content = f.read()
+          target = 'echo \"== [5/6] 构建'
+          injection = '''echo 'CONFIG_CCACHE=y' >> .config\necho \"CONFIG_CCACHE_DIR=\\\"$GITHUB_WORKSPACE/.ccache\\\"\" >> .config\n'''
+          if target in content:
+              content = content.replace(target, injection + target)
+              with open(bf, 'w') as f:
+                  f.write(content)
+              print('ccache injected into build.sh successfully')
+          else:
+              print('Warning: build target marker not found')
+          "
+
+      - name: 执行固件构建 (build.sh)
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          export LANG=C
+          cd "$GITHUB_WORKSPACE/.stage"
+          JOBS="$(nproc)" ./scripts/build.sh stock "$TREE" 2>&1 | tee "$GITHUB_WORKSPACE/build-$PROFILE.log"
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ env.PROFILE }}
+          path: build-${{ env.PROFILE }}.log
+
+      - name: 上传固件产物
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ env.PROFILE }}
+          if-no-files-found: error
+          path: |
+            ${{ env.TREE }}/bin/targets/airoha/an7581/*.itb
+            ${{ env.TREE }}/bin/targets/airoha/an7581/*.manifest
+            !${{ env.TREE }}/bin/targets/airoha/an7581/*-factory*
+
+  release:
+    if: (github.event.inputs.create_release == 'true' || github.event.inputs.create_release == true) && success()
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载固件产物
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-${{ github.event.inputs.profile || 'stock' }}
+          path: _firmware
+
+      - name: 打包固件压缩包
+        run: |
+          set -euo pipefail
+          tar -czvf "xr1710g-firmware-${{ github.event.inputs.profile || 'stock' }}.tar.gz" -C _firmware .
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.run_number }}
+          name: "XR1710G 固件构建 #${{ github.run_number }} (${{ github.event.inputs.profile || 'stock' }})"
+          body: |
+            ### 构建信息
+            - **档位 (Profile)**: `${{ github.event.inputs.profile || 'stock' }}`
+            - **上游基线 (Upstream)**: `${{ github.event.inputs.upstream_ref || '1fea1e59' }}`
+            - **OpenWrt 基座**: `${{ github.event.inputs.openwrt_ref || 'f1230284' }}`
+            - **CPU 频率**: 1200MHz (已关超频，稳定性优先)
+            - **网口映射**: 10G-1=WAN(eth1), 10G-2=LAN(eth2), 1G-1=LAN(lan2), 1G-2=LAN(lan3)
+            - **默认 LAN IP**: `192.168.2.1`
+          files: xr1710g-firmware-*.tar.gz
+          make_latest: true
+          prerelease: false

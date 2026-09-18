@@ -21,7 +21,9 @@ tmp/
 bin/
 dl/
 
-# 编辑器 / 系统
+# 编辑器 / 系统 / 缓存
 .DS_Store
 *.swp
 *~
+__pycache__/
+*.pyc
