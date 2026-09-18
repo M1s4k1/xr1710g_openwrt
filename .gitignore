@@ -1,0 +1,27 @@
+# stage 输出目录（每次构建由 stage.sh 重新合成，不入库）
+#   ⚠ 任何"需跨 stage 保留的运行时状态"都不要放这里（--delete 会清掉）
+.stage/
+
+# 上游裁决基线（check-upstream.sh --baseline 写入；不能放 .stage/ 下）
+.upstream-baseline
+
+# gen-order.py 生成的备份
+patches/ORDER.bak
+*.bak
+
+# 构建日志与产物
+build-*.log
+*.itb
+*.bin
+
+# OpenWrt 构建树残留（若误在仓库根构建）
+build_dir/
+staging_dir/
+tmp/
+bin/
+dl/
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+*~

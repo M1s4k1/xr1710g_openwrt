@@ -1,0 +1,53 @@
+# Source: 本仓库自研（local/patches/）
+# Upstream: n/a（9501 改名的连带修复，不打算上游）
+# Reason: 9501 把网口改成 YYH 命名后，上游 files/etc/config/system 里 LED 的 `dev`
+#   netdev 绑定失效 —— 内核里已不存在名为 wan / lan1 / lan2（原义）的接口，
+#   LED 的 netdev trigger 拿不到 netdev ⇒ 对应指示灯全灭（联网不受影响，只是灯不亮）。
+#   改名链路：wan(1G-1)→lan2、lan1(10G-1)→eth1、lan2(10G-2)→eth2、lan3(1G-2) 不变
+#   ⇒ 本补丁按此纠正 4 处 dev：
+#     led_wan_green / led_wan_amber : 'wan'  → 'lan2'   (WAN 灯跟 1G-1 物理口)
+#     led_lan1_green                : 'lan1' → 'eth1'   (10G-1)
+#     led_lan2_green                : 'lan2' → 'eth2'   (10G-2)
+#   led_lan3_* 的 dev 'lan3' 名称未变，不动。
+# ⚠ 只改 `dev`，**不碰 `sysfs`** —— sysfs 前缀（mt7530_dsa-0:* vs mt7530-0:*，取决于内核版本）
+#   由上游 98-xr1710g-led-sysfs-prefix 在首启时自动探测改写；两者各管一段，互不干扰。
+#   这也是本补丁相对旧 local/files/etc/uci-defaults/99-zz-mine-led 的优势：
+#   产物确定，不依赖 uci-defaults 的执行时机。
+# ⚠ LED 只是指示灯，本补丁不生效也不会断网（表现为对应口指示灯不亮）。
+# 依赖：语义上依赖 9501（名字一致性），但两者改不同文件，git apply 无需排序。
+diff --git a/files/etc/config/system b/files/etc/config/system
+index f32c0e2..aa5be41 100644
+--- a/files/etc/config/system
++++ b/files/etc/config/system
+@@ -20,14 +20,14 @@ config led 'led_wan_green'
+ 	option name 'WAN Green'
+ 	option sysfs 'mt7530_dsa-0:09:green:lan'
+ 	option trigger 'netdev'
+-	option dev 'wan'
++	option dev 'lan2'
+ 	option mode 'link'
+ 
+ config led 'led_wan_amber'
+ 	option name 'WAN Amber'
+ 	option sysfs 'mt7530_dsa-0:09:amber:lan'
+ 	option trigger 'netdev'
+-	option dev 'wan'
++	option dev 'lan2'
+ 	option mode 'tx rx'
+ 
+ config led 'led_lan3_green'
+@@ -48,12 +48,12 @@ config led 'led_lan1_green'
+ 	option name 'LAN1 10G Green'
+ 	option sysfs 'mt7530_dsa-0:08:green:lan'
+ 	option trigger 'netdev'
+-	option dev 'lan1'
++	option dev 'eth1'
+ 	option mode 'link tx rx'
+ 
+ config led 'led_lan2_green'
+ 	option name 'LAN2 10G Green'
+ 	option sysfs 'mt7530_dsa-0:05:green:lan'
+ 	option trigger 'netdev'
+-	option dev 'lan2'
++	option dev 'eth2'
+ 	option mode 'link tx rx'

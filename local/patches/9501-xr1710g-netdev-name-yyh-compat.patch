@@ -1,0 +1,37 @@
+# Source: 本仓库自研（local/patches/）
+# Upstream: n/a（纯本地命名偏好，不打算上游）
+# Reason: 板级走社区 PR #22397（主线方向），但网卡命名保持与 YYH 固件 tag xr1710g_260831 一致，
+#   使升级后 /etc/config/network 的接口名与 VLAN 的"基础设备"无需改动。
+#   目标命名（与 YYH 一致）：
+#     10G-1 (gdm2/phy8) -> eth1   WAN
+#     10G-2 (gdm4/phy5) -> eth2   LAN
+#     1G-1  (gsw_port1) -> lan2   LAN
+#     1G-2  (gsw_port2) -> lan3   LAN（不变）
+# 依赖：必须排在 9000 / 9001 之后（它们创建 dts 与 02_network 条目）。
+--- a/target/linux/airoha/dts/an7581-xr1710g-ubi.dts
++++ b/target/linux/airoha/dts/an7581-xr1710g-ubi.dts
+@@ -321,4 +321,4 @@
+ 	nvmem-cells = <&wan_mac 0>;
+ 	nvmem-cell-names = "mac-address";
+-	openwrt,netdev-name = "lan1";	/* 10G-1（决策：LAN；WAN 走 1G-1） */
++	openwrt,netdev-name = "eth1";	/* 10G-1（YYH 兼容命名：WAN） */
+ };
+@@ -337,4 +337,4 @@
+ 	nvmem-cells = <&lan_mac 0>;
+ 	nvmem-cell-names = "mac-address";
+-	openwrt,netdev-name = "lan2";	/* 10G-2 */
++	openwrt,netdev-name = "eth2";	/* 10G-2（YYH 兼容命名：LAN） */
+ };
+@@ -408,4 +408,4 @@
+ &gsw_port1 {
+ 	status = "okay";
+-	label = "wan";	/* 1G-1：WAN（决策；光猫千兆上联） */
++	label = "lan2";	/* 1G-1（YYH 兼容命名：LAN） */
+ };
+--- a/target/linux/airoha/an7581/base-files/etc/board.d/02_network
++++ b/target/linux/airoha/an7581/base-files/etc/board.d/02_network
+@@ -9,3 +9,3 @@
+ 	gemtek,xr1710g-ubi)
+-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
++		ucidef_set_interfaces_lan_wan "eth2 lan2 lan3" "eth1"
+ 		;;

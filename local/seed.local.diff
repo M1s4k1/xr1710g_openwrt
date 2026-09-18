@@ -1,0 +1,22 @@
+# local/seed.local.diff — 兼容层③：补上游 seed 未含的排障工具
+#
+# 依据：实机 preflash-checklist 对比（YYH 实机 apk info 与上游 seed 差额）
+# 上游 config/seed-config.diff 已含：ethtool / ip-bridge / tcpdump / iperf3 /
+#   kmod-phy-realtek / kmod-hwmon-nct7802 / lenv 等；此处只补差额 4 项。
+#
+# ⚠ 写法铁律（上游 F164）：活动 CONFIG_* 行只允许「符号=取值」，
+#   说明一律写到**上一行**的注释里（尾随注释会被 kconfig 在空白处截断）。
+# ⚠ 不要写 CONFIG_PACKAGE_ethtool-full=y —— 与上游已选的 ethtool 冲突（provides）。
+# ⚠ audit-config.sh 会校验这些符号是否真进了 .config，写错会报红。
+
+# phytool：PHY 寄存器读写（10G/1G PHY 排障）
+CONFIG_PACKAGE_phytool=y
+
+# mdio-tools：MDIO 总线访问（PHY 层诊断）
+CONFIG_PACKAGE_mdio-tools=y
+
+# ip-full：完整版 iproute2（YYH 有；ip-bridge 之外还要 ip link/vlan 全功能）
+CONFIG_PACKAGE_ip-full=y
+
+# openssh-sftp-server：SFTP 服务端（备份/传文件）
+CONFIG_PACKAGE_openssh-sftp-server=y

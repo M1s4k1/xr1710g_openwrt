@@ -1,0 +1,67 @@
+# Source: 本仓库自研（local/patches/）
+# Upstream: n/a（纯本地环境适配，不打算上游）
+# Reason: 把上游 files/etc/config/network 对齐 YYH 固件 tag xr1710g_260831 的实机取值。
+#   网口**命名**本身由 9501 补丁（dts netdev-name + 02_network）负责，本补丁只处理
+#   随之失效/错误的三处引用：
+#     ① br-lan 成员 `lan1` —— 9501 后 10G-1 改名 eth1 且归属 WAN，桥里再写 lan1
+#        是悬空引用（甚至可能把 WAN 口桥进 LAN）⇒ 改为 eth2（10G-2，YYH 的 LAN 成员）
+#     ② lan IP 192.168.123.1 → 192.168.2.1（决策：LAN 网段钉死）
+#     ③ wan/wan6 的 device 'wan' —— 9501 后 1G-1 叫 lan2、10G-1 叫 eth1，
+#        YYH 的 WAN 走 10G-1 ⇒ 改为 eth1
+#   改动后 br-lan = {eth2, lan2, lan3}、WAN = eth1，与 YYH 实机 /etc/config/network 逐字一致
+#   （对照：实机 backup.tgz，2026-09-16 实机采集）。
+# ⚠ 不含任何个人配置：无 SSID/密码/自定义 MAC。WAN MAC 不在此钉死 —— 由 dts `&gdm2`
+#   绑 `nvmem-cells = <&wan_mac 0>` 从 factory:0x5000 读出厂值（YYH 同样不钉）。
+# ⚠ 为什么用 patch 而不是 uci-defaults：files/etc/config/* 是**打进镜像的初始配置**，
+#   首启 board.d/02_network 会重新生成 network，uci-defaults 与之的先后顺序不确定；
+#   patch 直接改源文件 ⇒ 产物确定、无时序依赖。
+# ⚠ 叠加模型下 files/ 是树的未跟踪文件，git apply（无 --index）可改；
+#   apply-patches.sh --dry-run 用的 `git apply --index` 会报 "does not exist in index"。
+#   本仓库实际走 fork 模型（TREE==ROOT，files/ 已跟踪）⇒ 两种模式均正常，见 README §9。
+# 依赖：语义上依赖 9501（名字一致性），但两者改不同文件，git apply 无需排序。
+diff --git a/files/etc/config/network b/files/etc/config/network
+index a0326a8..2a25ac5 100644
+--- a/files/etc/config/network
++++ b/files/etc/config/network
+@@ -1,6 +1,8 @@
+-# files/etc/config/network — 默认网络（决策：主路由，WAN=1G-1，LAN=192.168.123.1）
+-# 接口名 = dts openwrt,netdev-name（9001 补丁）：lan1/lan2=双 10G（gdm2/gdm4）、wan=1G-1（gsw_port1）、lan3=1G-2（gsw_port2）
+-# ⚠ 物理口 ↔ 逻辑名映射待实机确认（ip -br link 核对后固化，见 ROADMAP P0）
++# files/etc/config/network — 默认网络（决策：主路由，WAN=10G-1，LAN=192.168.2.1）
++# 接口名 = dts openwrt,netdev-name（9001 补丁创建，9501 改为 YYH 命名）：
++#   eth1 = 10G-1（gdm2/phy8）→ WAN    eth2 = 10G-2（gdm4/phy5）→ LAN
++#   lan2 = 1G-1（gsw_port1）→ LAN     lan3 = 1G-2（gsw_port2）→ LAN
++# 与 YYH 固件 tag xr1710g_260831 实机命名一致（9501 补丁保证；本文件只需引用同一套名字）
+ 
+ config interface 'loopback'
+ 	option device 'lo'
+@@ -11,23 +13,23 @@ config interface 'loopback'
+ config interface 'lan'
+ 	option device 'br-lan'
+ 	option proto 'static'
+-	option ipaddr '192.168.123.1'          # 决策：LAN 网关
++	option ipaddr '192.168.2.1'            # 决策：LAN 网关（YYH 对齐，固定不变）
+ 	option netmask '255.255.255.0'
+ 	option ip6assign '60'
+ 
+ config device
+ 	option name 'br-lan'
+ 	option type 'bridge'
+-	list ports 'lan1'                     # TODO 实机确认：10G-1
+-	list ports 'lan2'                     # TODO 实机确认：10G-2
+-	list ports 'lan3'                     # TODO 实机确认：1G-2
++	list ports 'eth2'                     # 10G-2（9501 后 10G-1 已改名 eth1 且归属 WAN，勿再加入桥）
++	list ports 'lan2'                     # 1G-1（9501 前是 10G-2；改名后 lan2 指 1G-1）
++	list ports 'lan3'                     # 1G-2（名称未变）
+ 
+ config interface 'wan'
+-	option device 'wan'                   # 决策：WAN = 1G-1（光猫千兆上联）
++	option device 'eth1'                  # 决策：WAN = 10G-1（YYH 命名；如走千兆上联改 lan2）
+ 	option proto 'dhcp'                   # DHCP 上网为主；PPPoE 在 LuCI 面板改（决策：占位不预置）
+ 
+ config interface 'wan6'
+-	option device 'wan'
++	option device 'eth1'
+ 	option proto 'dhcpv6'
+ 	option reqaddress 'try'
+ 	option reqprefix 'auto'

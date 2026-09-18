@@ -1,0 +1,101 @@
+# local/manifest.rules — func 档定义（由 xr1710g-patch-inventory.md 决策生成）
+# 生成日期 2026-09-16   上游基线 1fea1e5 (ci-172)
+#
+# 「func」是**本仓库自己的选择集名称，不是上游的构建档位（tier）**。
+#   上游 MANIFEST 前缀未新增（仍是 default / #EXP / #OC / #DISABLED），远端基础保持干净。
+#   本规则把选中的 #EXP/#OC 条目提档为 default、把落选的停用 ⇒ 结果即 func 选择集。
+#
+# func 选择集 = 上游 MANIFEST 经本规则处理后的结果：
+#   - 停用     ^ 提档（#EXP/#OC → default）   + 追加
+# 构建：scripts/build.sh stock（提档后所有选中项都在 default 里；剩余 #EXP 为 0 ⇒ experimental 与 stock 等价）
+# 产物 tag 建议：func-<日期>-<upstream7>
+
+# ── 停用：加密/IPsec/SOE 组（29 条；上游 F150 实证启用后编译失败）+ 其它 3 条（9051/9055/regdb-0555）+ mt76-0014（撤销提档，见其行内理由）──
+# 实测停用总数 = 33 条（grep -cE '^- ' local/manifest.rules）
+# 实测提档总数 = 40 条；提档后剩余 #EXP = 0 ⇒ experimental 与 stock 等价
+- patches/root/9999-net-airoha-soe-10-dt-bindings-en7581-soe.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-11-maintainers-soe-binding.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-12-dtsi-en7581-soe-node.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-13-soe-ppe-ipsec-registers.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-14-soe-state-datapath-metadata.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-15-soe-ppe-driver-interfaces.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-16-integrate-soe-eth-datapath.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-17-flow-offload-xfrm-actions.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-18-flowtable-xfrm-route-metadata.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-19-flowtable-retain-xfrm-input.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-20-flowtable-discover-xfrm-state.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-21-flowtable-xfrm-hw-actions.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-22-flowtable-keep-xfrm-off-sw-path.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-23-flowtable-admit-authed-xfrm.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-24-flowtable-ctx-offload-api.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-25-autonomous-soe-xfrm-offload.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-26-soe-xfrm-packet-offload.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-27-build-soe-provider.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9999-net-airoha-soe-28-soe-offload-kconfig.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/root/9053-xr1710g-xfrm-packet-offload.patch   # 理由: 不用硬件 IPsec（xfrm 框架）
+- patches/root/9054-xr1710g-crypto-eip93-dynamic-fallback.patch   # 理由: 不用硬件 IPsec（EIP93 软回退）
+- patches/root/9060-xr1710g-crypto-eip93-package-deps.patch   # 理由: 不用硬件 IPsec（9054 的打包配套）
+- patches/root/9062-xr1710g-eip93-reliability.patch   # 理由: 不用硬件 IPsec（EIP93 可靠性）
+- patches/root/9065-xr1710g-eip93-request-id-exhaustion.patch   # 理由: 不用硬件 IPsec（EIP93 可靠性）
+- patches/root/9066-xr1710g-eip93-request-local-sa-records.patch   # 理由: 不用硬件 IPsec（EIP93 可靠性）
+- patches/root/9063-xr1710g-xfrm-lag-shared-state.patch   # 理由: 不用硬件 IPsec（SOE LAG）
+- patches/root/9064-xr1710g-soe-kconfig-enable.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
+- patches/vendor/fanboy/02-eip93-f80d0507.patch   # 理由: 不用硬件 IPsec（EIP93 驱动本体）
+- patches/root/9051-xr1710g-gro-fraglist-gso-nesting.patch   # 理由: 不用 USB 网络共享（Tethering），不触发该路径
+- patches/root/9055-xr1710g-pcs-rxlock-diagnostics.patch   # 理由: 暂不需要 PCS 诊断日志（攻 10G 时再临时打开）
+- patches/packages/regdb-0555-w1700k-unii4-6g-30.patch      # 理由: 不启用 6GHz 30dBm（OC 档高功率，合规考虑）
+- patches/vendor/fanboy/04-dsa-kmod-netlink-22532-aa531917.patch   # 理由: VLAN/交换功能不依赖它（实测当前固件 NET_DSA_MT7530=y 无此补丁即可配 VLAN）；启用会 DSA/以太网/NPU 驱动 y→m 且 kmod-dsa-mt7530 无依赖拉入，1G 口有失联风险
+- patches/vendor/fanboy/21-hsuart-baud-calculations-4e2b80ff.patch   # 理由: 修的是 W1700K 的 EFR32(Zigbee)/GPS 串口（hsuart3@1fbe1000 等）波特率；XR1710G 无此硬件且板级 dts(9001)已明确"去 EFR32(uart2/hsuart3)"，且本补丁不碰 console(serial0=uart1)。另实测与 openwrt main@f1230284c6(2026-09-16)的 target/linux/airoha/patches-6.18/886-uart-add-en7523-support.patch 上下文冲突⇒ 停用同时解决构建阻断
+
+^ patches/root/9036-xr1710g-airoha-npu-dirty-lazy-clean.patch   # 理由: issue#7 整机无声重启防御（方案 A，上游默认；9037 为备选且被上游登记 pending 不可用）
+# ── 提档：纳入 func 的实验档补丁 ──
+^ patches/packages/mt76-0010-set-skb-device-for-npu-rx.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0012-wifi-mt76-npu-del-sta.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0013-wifi-mt76-mt7996-refresh-tx-agg-timer-under-npu-offload.patch   # 理由: func 档纳入（experimental → default）
+- patches/packages/mt76-0014-wifi-mt76-npu-reset-panic-race-hardening.patch   # 理由: 撤销提档（原 ^）。上游 F170 实机否证其内层 047 修法（ci-171/172/174 三版全灭，真根因是 PCIe AER 而非 NPU stop）；上游始终留 #EXP，本档不再比上游激进。快照 1fea1e5 内即已含此否证证据
+^ patches/packages/mt76-0015-wifi-mt76-mt7996-npu-firmware-sta-counters.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0147-wifi-mt76-mt7996-npu-init-retry-after-recovery.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0153-wifi-mt76-fix-npu-teardown-ordering.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0154-wifi-mt76-tie-npu-dma-memory-to-the-consumer.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0156-wifi-mt76-finish-npu-rx-queue-teardown.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0158-wifi-mt76-publish-npu-rx-buffers-after-refill.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0016-wifi-mt76-mt7996-radar-detecting-chanctx.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0017-wifi-mt76-mt7996-bypass-hwrro-sub64-ba.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0018-wifi-mt76-mt7996-fix-dl-ofdma-after-sta-reconnect.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0021-mtk-mt76-mt7996-only-disallow-global-wcid.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0145-wifi-mt76-mt7996-scan-dwell-time-hw-cap.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0159-wifi-mt76-preserve-npu-tx-ring-headroom.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0160-wifi-mt76-mt7996-shutdown-device-before-restart.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0161-wifi-mt76-track-rx-napi-registration.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mt76-0162-wifi-mt76-stop-npu-before-unregistering-device.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-397-wifi-mac80211-fix-csa-punct-bitmap-sta-mode.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-399-wifi-mac80211-fix-cac-event-call-trace.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-400-wifi-mac80211-fix-non-tx-bss-checking.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-405-wifi-mac80211-handle-csa-finalize-non-tx-bss.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-406-wifi-mac80211-do-not-update-channel-if-csa-ie.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-407-wifi-mac80211-fix-direct-csa-issues.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-409-wifi-mac80211-fix-aql-bmc-mld.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-410-wifi-mac80211-prevent-rts-unexpectedly-set.patch   # 理由: func 档纳入（experimental → default）
+^ patches/packages/mac80211-412-mac80211-defer-ap-side-ft-key-upload.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9029-xr1710g-airoha-pcs-jcpll-tclvar-recal.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9038-xr1710g-pcs-usxgmii-stabilize.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9040-xr1710g-airoha-pinctrl-force-gpio.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9041-xr1710g-rtk-serdes-bundle.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9044-xr1710g-pcs-usxgmii-rate-adaptation.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9045-xr1710g-airoha-rx-recover-irq-thermal.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9046-xr1710g-fix-992-20-context.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9061-xr1710g-airoha-npu-mailbox-recovery.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9058-xr1710g-hwrng-scu-clock-order.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9059-xr1710g-hwrng-scu-dts.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9039-xr1710g-airoha-ppe-keep-local-flows-cpu.patch   # 理由: func 档纳入（experimental → default）
+^ patches/root/9050-xr1710g-airoha-mib-stats-lossless.patch   # 理由: func 档纳入（experimental → default）
+
+
+# 注：9037（issue#7 方案 B）**不能**用 + 追加 —— 它在上游 gen-order.py 的 PENDING 列表里被硬编码
+#   登记为「不参与任何档位」，进 MANIFEST 会直接触发 audit-order 报红。要用方案 B 只能：
+#   ^ 9036（提档） + ! 9036 → 9037（替换路径），二者同时写且 ^ 在前。默认仍建议用 9036。
+
+# ── 追加：本地自研补丁 ──
++ patches/local/9501-xr1710g-netdev-name-yyh-compat.patch ROOT after patches/root/9001-xr1710g-dts.patch   # 理由: 板级走 PR #22397 主线方向，但网口命名保持 YYH tag xr1710g_260831（eth1=WAN / eth2 lan2 lan3=LAN），避免升级后重配
++ patches/local/9601-xr1710g-network-yyh-align.patch ROOT   # 理由: 9501 改名后上游 files/etc/config/network 三处失效（br-lan 的 lan1 悬空且会把 WAN 口桥进 LAN / LAN IP / wan device）⇒ 改回 YYH 实机取值；LAN 网段钉死 192.168.2.1
++ patches/local/9602-xr1710g-led-yyh-align.patch ROOT   # 理由: 9501 改名后 files/etc/config/system 的 LED netdev dev 绑定失效（3 口灯灭）⇒ 纠正 4 处 dev；替代原 local/files/etc/uci-defaults/99-zz-mine-led
