@@ -73,6 +73,14 @@ jobs:
           cd "$TREE"
           git checkout -q "${{ github.event.inputs.openwrt_ref || '7f4f824691fb2258afe9eb9a37da46d3557c4043' }}"
           echo "OpenWrt commit: $(git rev-parse --short HEAD)"
+          # 内核版本硬门禁：锁定 6.18.44，防止误漂移到 6.18.52+
+          if grep -q 'LINUX_VERSION-6.18.*=.*\.44' target/linux/generic/kernel-6.18 2>/dev/null; then
+            echo "✓ 内核版本验证通过：Linux 6.18.44"
+          else
+            echo "::error::当前 OpenWrt 树内核版本非 6.18.44，构建补丁集必将失败！请检查 openwrt_ref！"
+            grep 'LINUX_VERSION-6.18' target/linux/generic/kernel-6.18 2>/dev/null || true
+            exit 1
+          fi
 
       - name: 安装构建依赖
         run: |

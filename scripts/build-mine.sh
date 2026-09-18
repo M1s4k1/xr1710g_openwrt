@@ -105,6 +105,20 @@ TREE="$(cd "$TREE" && pwd)"
 echo "  源码树：$TREE"
 echo "  源码树 HEAD：$(git -C "$TREE" rev-parse --short HEAD)（$(git -C "$TREE" log -1 --format=%ad --date=short)）"
 
+# ── 校验内核版本（必须 6.18.44）─────────────────────────────────────
+# 补丁集对齐 Linux 6.18.44；6.18.52+ 会因 netfilter/flowtable 上下文变动导致补丁 reject
+if [[ -f "$TREE/target/linux/generic/kernel-6.18" ]]; then
+  if ! grep -q 'LINUX_VERSION-6.18.*=.*\.44' "$TREE/target/linux/generic/kernel-6.18"; then
+    echo "FATAL: $TREE 的内核版本非 6.18.44！" >&2
+    echo "  当前定义：" >&2
+    grep 'LINUX_VERSION-6.18' "$TREE/target/linux/generic/kernel-6.18" >&2 || true
+    echo "  本叠加层补丁集（如 675-02 bridge offload）严格锁定 Linux 6.18.44。" >&2
+    echo "  请将源码树 checkout 到稳定基线 commit：7f4f824691fb2258afe9eb9a37da46d3557c4043" >&2
+    exit 1
+  fi
+  echo "  内核版本：Linux 6.18.44 (OK)"
+fi
+
 # ⚠ 上游 build.sh 第 0 步会对源码树执行 `git reset --hard` + `git clean -fd`，
 #   这是"叠加层模型"的设计（树被视为可丢弃品），但会**丢掉源码树里未提交的改动**。
 #   这里只提示不阻断：多数情况源码树本就该是干净的，但避免静默丢工作。
