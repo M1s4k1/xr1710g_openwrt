@@ -97,14 +97,13 @@ gh workflow run build.yml -f profile=stock
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `profile` | `stock` | **stock = func 正式档（103 活动）**；`v1-safe` = 保守档（63 活动） |
-| `openwrt_ref` | `f1230284c6…` | OpenWrt 源码树 ref |
+| `openwrt_ref` | `7f4f824691…` | OpenWrt 源码树 ref（对齐 Linux 6.18.44 基线） |
 | `upstream_ref` | `1fea1e59…` | 上游叠加层 ref |
 
 ### 为什么 pin 两个 ref
 
-默认锁到 **2026-09-17 实测通过**的组合，保证可复现。取最新 `main` 可能引入补丁
-上下文冲突（先例：`21-hsuart` 与 09-16 树不匹配，已停用；换版本可能再现同类冲突）。
-需要跟进上游时**显式改 input**，别默认跟随。
+默认锁到 **Linux 6.18.44 基线**（OpenWrt `7f4f824691` + 上游 `1fea1e59`），对齐上游 `audit-upstream-watch.sh` 的 `BASELINE_UPSTREAM`，保证可复现。
+取最新 `main` 会因内核版本升级（≥6.18.52）导致补丁 reject 阻断编译。需要跟进上游时**显式改 input**，别默认跟随。
 
 ### CI 流程
 
@@ -117,7 +116,7 @@ gh workflow run build.yml -f profile=stock
 
 ---
 
-## 9. 两个已定位的环境坑（实测，非推测）
+## 9. 三个已定位的环境坑（实测，非推测）
 
 ### 9.1 必须 C locale —— 否则上游脚本一启动就崩
 
@@ -151,5 +150,10 @@ build.sh: line 36: TIERï¿½: unbound variable
 **真实构建不受影响**，只有对外部树跑 `--dry-run` 会在本地补丁处停。
 （上游 CI 的 dry-run 是对仓库自身跑，`files/` 已跟踪，故不受影响。）
 
-> 实测记录（2026-09-17，源码树 `openwrt/openwrt@f1230284c6`）：叠加后跑 dry-run，
-> 全部 93 个 ROOT 补丁通过，仅本地 9601 因子上原因停止 —— 属预期，非补丁缺陷。
+### 9.3 内核版本必须对齐 6.18.44（`7f4f824691`）
+
+OpenWrt main 在 2026-09-16（commit `ddbf9c85575c`）合入了 PR #24800，将 6.18 内核由 **6.18.44** 升级至 **6.18.52**。
+然而上游叠加层中的 vendor 补丁 `06-nft-flow-offload-l2-22533-ceffe6acb5.patch`（内层 `675-02-nft_flow_offload-bridge-offload-and-flowtable-type.patch`）系针对 6.18.44 开发：
+- 在 6.18.52 下编译内核头文件时，`net/netfilter/nf_flow_table_path.c` 的 Hunk #7 和 #9 会发生 reject 导致构建失败。
+- 该现象在仅跑 `apply-patches.sh --dry-run` 时不会暴露（dry-run 只检测 OpenWrt 仓库层文件，不解包编译 Linux 源码）。
+- 因此 OpenWrt 源码树必须锁定在 bump 之前的稳定基线 `7f4f824691fb2258afe9eb9a37da46d3557c4043`（上游 `audit-upstream-watch.sh` 的 `BASELINE_UPSTREAM` 锚点）。

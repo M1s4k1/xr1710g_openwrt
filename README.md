@@ -47,7 +47,7 @@ xr1710g_openwrt/
 ```bash
 # 1) 准备一棵 OpenWrt 源码树（只需一次，建议接近快照日期）
 git clone https://github.com/openwrt/openwrt.git <源码树>
-cd <源码树> && git checkout <openwrt_ref>   # 默认 f1230284c6…
+cd <源码树> && git checkout <openwrt_ref>   # 默认 7f4f824691… (Kernel 6.18.44 基线)
 
 # 2) 构建（v1-safe 保守档首次刷机建议）
 scripts/build-mine.sh v1-safe --tree <源码树>
