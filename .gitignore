@@ -27,3 +27,4 @@ dl/
 *~
 __pycache__/
 *.pyc
+.idea
