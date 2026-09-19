@@ -105,3 +105,5 @@
 + patches/local/9501-xr1710g-netdev-name-yyh-compat.patch ROOT after patches/root/9001-xr1710g-dts.patch   # 理由: 板级走 PR #22397 主线方向，但网口命名保持 YYH tag xr1710g_260831（eth1=WAN / eth2 lan2 lan3=LAN），避免升级后重配
 + patches/local/9601-xr1710g-network-yyh-align.patch ROOT   # 理由: 9501 改名后上游 files/etc/config/network 三处失效（br-lan 的 lan1 悬空且会把 WAN 口桥进 LAN / LAN IP / wan device）⇒ 改回 YYH 实机取值；LAN 网段钉死 192.168.2.1
 + patches/local/9602-xr1710g-led-yyh-align.patch ROOT   # 理由: 9501 改名后 files/etc/config/system 的 LED netdev dev 绑定失效（3 口灯灭）⇒ 纠正 4 处 dev；替代原 local/files/etc/uci-defaults/99-zz-mine-led
++ patches/local/9603-xr1710g-packages-argon-i18n.patch ROOT   # 理由: 预装常用运维套件、UPnP、Argon 主题与完整中文语言支持（含 13 个完整汉化 lmo 与 uci-defaults 默认中文初始化）
+

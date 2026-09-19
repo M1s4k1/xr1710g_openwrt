@@ -20,3 +20,28 @@ CONFIG_PACKAGE_ip-full=y
 
 # openssh-sftp-server：SFTP 服务端（备份/传文件）
 CONFIG_PACKAGE_openssh-sftp-server=y
+
+# ── 运维基础套件（O）──
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_coreutils=y
+
+# ── UPnP 端口自动映射（O）──
+CONFIG_PACKAGE_luci-app-upnp=y
+CONFIG_PACKAGE_miniupnpd-nftables=y
+
+# ── Argon 主题与配置界面（C：packages-xr1710g 内置）──
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-app-argon-config=y
+CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y
+
+# ── 语言包支持（开启全局中文 + 显式声明各应用 zh-cn 包）──
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-filemanager-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-irqbalance-zh-cn=y
+
