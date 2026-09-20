@@ -4,8 +4,8 @@
 构建骨架仓库。它**不含 OpenWrt 源码**，只放「相对上游 `genshanxinli/xr1710g-openwrt` 的差异」
 （diff-as-config），构建时叠加到上游源码树。
 
-- 上游源码（只读引用）：上游 `genshanxinli/xr1710g-openwrt` 仓库（脚本自动探测 `../xr1710g-openwrt`、`../../xr1710g-openwrt` 等，或通过 `UPSTREAM_DIR` 指定）
-- 设计 / 决策文档：置于本仓库外的工作目录（kickoff、配置兼容层、补丁清单、下游手册、评审、刷机前清单、WAN TX 排查、复审报告），不随本仓库发布
+- 上游源码（只读引用）：上游 `genshanxinli/xr1710g-openwrt` 仓库
+- 清单文档：local/manifest.rules
 
 ---
 
