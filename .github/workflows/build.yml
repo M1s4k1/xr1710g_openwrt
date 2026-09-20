@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: '档位：stock=func 正式档（103 活动，推荐）/ v1-safe=保守档（63 活动）'
+        description: '档位：stock=func 正式档（104 活动，推荐）/ v1-safe=保守档（63 活动）'
         default: 'stock'
         required: true
         type: choice
@@ -28,8 +28,8 @@ on:
         default: '7f4f824691fb2258afe9eb9a37da46d3557c4043'
         required: true
       upstream_ref:
-        description: '上游叠加层 ref（默认 func 基线快照）'
-        default: '1fea1e59e4baccabfcf751ab6a57d78a1dfdd16a'
+        description: '上游叠加层 ref（默认 func 基线快照，已推进至 ci-177）'
+        default: '244d433374b5a49904d6ca107f078553b37c6111'
         required: true
       create_release:
         description: '构建成功后是否自动创建 GitHub Release'
