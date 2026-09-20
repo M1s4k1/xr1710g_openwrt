@@ -9,6 +9,7 @@
 #   scripts/check-upstream.sh                 # fetch + 完整报告
 #   scripts/check-upstream.sh --no-fetch      # 用已有 origin/main 引用，不联网
 #   scripts/check-upstream.sh --quiet         # 仅有更新时输出摘要（适合定时任务）
+#   scripts/check-upstream.sh --patch-only    # 只看补丁文件变动（过滤文档/调试脚本杂音）
 #   scripts/check-upstream.sh --baseline      # 记录当前上游 tip 为「已裁决基线」
 #
 # 退出码：
@@ -37,12 +38,13 @@ DECISIONS="$ROOT/upstream-decisions.md"
 #   放仓库根的隐藏文件（已登记 .gitignore），与 .stage 生命周期解耦。
 STAMP="$ROOT/.upstream-baseline"   # 上次裁决过的上游 tip
 
-DO_FETCH=1; QUIET=0; SET_BASELINE=0
+DO_FETCH=1; QUIET=0; SET_BASELINE=0; PATCH_ONLY=0
 for a in "$@"; do
   case "$a" in
     --no-fetch)     DO_FETCH=0 ;;
     --quiet|-q)     QUIET=1 ;;
     --baseline)     SET_BASELINE=1 ;;
+    --patch-only|-p) PATCH_ONLY=1 ;;
     -h|--help)      sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $a" >&2; exit 1 ;;
   esac
@@ -72,9 +74,11 @@ if [[ "$SET_BASELINE" == 1 ]]; then
   exit 0
 fi
 
-# 基线优先取裁决标记；没有则退回本地快照 HEAD
+# 基线优先取裁决标记；没有则从 rules 头部提取；再没有则退回本地快照 HEAD
 if [[ -f "$STAMP" ]]; then
   BASE_TIP="$(cat "$STAMP")"; BASE_SRC="裁决基线"
+elif RULES_BASE="$(grep -oE '上游基线[[:space:]]+[0-9a-f]{7,}' "$RULES" 2>/dev/null | awk '{print $2}')" && [[ -n "$RULES_BASE" ]] && git rev-parse "$RULES_BASE" >/dev/null 2>&1; then
+  BASE_TIP="$(git rev-parse "$RULES_BASE")"; BASE_SRC="规则基线"
 else
   BASE_TIP="$LOCAL_TIP"; BASE_SRC="本地快照"
 fi
@@ -101,9 +105,15 @@ echo "   远端   : ${REMOTE_TIP:0:9}"
 echo "   增量   : $N_COMMITS 个提交"
 echo
 
-echo "-- 提交清单 - $BASE_SRC → 远端--"
-git log --oneline --no-decorate "$BASE_TIP..$REMOTE_TIP" 2>/dev/null | sed 's/^/   /'
-echo
+if [[ "$PATCH_ONLY" == 1 ]]; then
+  echo "-- 补丁文件变动（已过滤纯文档/调试脚本提交）--"
+  git diff --name-status "$BASE_TIP..$REMOTE_TIP" -- 'patches/*.patch' 'patches/*/*.patch' 'patches/*/*/*.patch' 2>/dev/null | sed 's/^/   /' || echo "   无补丁文件变动"
+  echo
+else
+  echo "-- 提交清单 - $BASE_SRC → 远端--"
+  git log --oneline --no-decorate "$BASE_TIP..$REMOTE_TIP" 2>/dev/null | sed 's/^/   /'
+  echo
+fi
 
 # ── 2. 补丁层变化：上游 MANIFEST 增删 ───────────────────────────────────
 # 这是「逐条裁决」的核心原料：上游新增/删除/改档了哪些补丁。

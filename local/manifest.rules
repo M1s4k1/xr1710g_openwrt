@@ -1,5 +1,5 @@
 # local/manifest.rules — func 档定义（由 xr1710g-patch-inventory.md 决策生成）
-# 生成日期 2026-09-16   上游基线 1fea1e5 (ci-172)
+# 生成日期 2026-09-20   上游基线 244d433 (ci-177)
 #
 # 「func」是**本仓库自己的选择集名称，不是上游的构建档位（tier）**。
 #   上游 MANIFEST 前缀未新增（仍是 default / #EXP / #OC / #DISABLED），远端基础保持干净。
@@ -11,8 +11,8 @@
 # 产物 tag 建议：func-<日期>-<upstream7>
 
 # ── 停用：加密/IPsec/SOE 组（29 条；上游 F150 实证启用后编译失败）+ 其它 3 条（9051/9055/regdb-0555）+ mt76-0014（撤销提档，见其行内理由）──
-# 实测停用总数 = 33 条（grep -cE '^- ' local/manifest.rules）
-# 实测提档总数 = 40 条；提档后剩余 #EXP = 0 ⇒ experimental 与 stock 等价
+# 实测停用总数 = 34 条（grep -cE '^- ' local/manifest.rules）
+# 实测提档总数 = 40 条；提档后剩余 #EXP = 3 条（mt76-0023、9059a、9059b 维持实验档观望）
 - patches/root/9999-net-airoha-soe-10-dt-bindings-en7581-soe.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
 - patches/root/9999-net-airoha-soe-11-maintainers-soe-binding.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
 - patches/root/9999-net-airoha-soe-12-dtsi-en7581-soe-node.patch   # 理由: 不用硬件 IPsec（SOE 组，上游实证编译失败）
