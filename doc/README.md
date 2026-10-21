@@ -8,12 +8,13 @@
 | 文档 | 内容 |
 |------|------|
 | [build.md](build.md) | 快速开始、构建流水线、GitHub Actions、已定位的环境坑、版本锁定 |
-| [rules.md](rules.md) | `local/manifest.rules*` 语法与选择集（停用 `-` / 提档 `^` / 追加 `+`） |
-| [audit.md](audit.md) | `audit-local.sh` 自检：rules 语法、端口命名一致性、无个人配置残留 |
+| [rules.md](rules.md) | `local/manifest.rules*` 语法与收录清单（应用型 / 复制型条目） |
+| [audit.md](audit.md) | `audit-local.sh` 自检：[A]-[H]（清单语法、端口命名一致性、无个人配置残留等） |
 | [config-ownership.md](config-ownership.md) | 配置归属铁律：A/B 类进固件，C 类（SSID/密码/自定义 MAC）不进 |
-| [maintenance.md](maintenance.md) | 长期维护：监控上游更新 + 逐条裁决工作流（check-upstream.sh） |
-| [patch-review.md](patch-review.md) | 多来源上游巡检评审账本：逐候选事实 + AI 建议 + 人工裁决字段（待人工填写） |
+| [maintenance.md](maintenance.md) | 长期维护：基座更新跟踪 + 逐条裁决工作流（check-upstream.sh） |
+| [patch-review.md](patch-review.md) | 多来源上游巡检评审账本：逐候选事实 + AI 建议 + 人工裁决字段 |
 | [scripting.md](scripting.md) | 脚本编写约定（C locale、grep 跨平台等血泪教训） |
+| [handoff.md](handoff.md) | **项目交接文档（AI 接手指南）**：架构、结构、运行方式、100 补丁全集与作用、验证套件、遗留事项、操作守则 |
 
 ## 设计 / 决策文档（仓库外归档）
 

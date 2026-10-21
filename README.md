@@ -51,6 +51,7 @@ xr1710g_openwrt/
 - [自检](doc/audit.md) — `audit-local.sh`
 - [配置归属](doc/config-ownership.md) — 哪些进固件、哪些不进
 - [长期维护](doc/maintenance.md) — 基座更新跟踪（check-upstream.sh）与评审流程
+- [**项目交接（AI 接手）**](doc/handoff.md) — 架构 / 结构 / 运行方式 / **100 个补丁全集与作用** / 验证套件 / 遗留事项 / 操作守则
 
 ## 快速开始
 
