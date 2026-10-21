@@ -5,7 +5,8 @@
 
 - 内置 aggregate：[`aggregate/`](aggregate/)（冻结快照，项目内部文件；来源和复制基线见 `config/source-lock.env`）
 - OpenWrt 源码树：单独准备，脚本通过 `--tree` / `OPENWRT_DIR` 指定
-- 设计 / 决策文档：置于本仓库内的 `doc/` 与 `upstream-decisions.md`
+- 运营文档：[`doc/`](doc/README.md)（构建 / rules / 审计 / 配置归属 / 维护 / 脚本约定 / 评审账本索引）+ 根目录 `upstream-decisions.md`（aggregate 上游裁决账本）
+- 设计 / 决策文档：置于**本仓库外**的本地工作目录，不随本仓库发布，仅作历史决策记录（kickoff、配置兼容层、补丁清单、下游构建计划、下游操作手册、func 档评审、刷机前清单、WAN TX 排查、REVIEW-2026-09-17）
 
 ---
 
@@ -25,7 +26,7 @@ xr1710g_openwrt/
 ├── aggregate/        # 内置冻结的补丁聚合层（不作为外部仓库引用）
 ├── local/            # 本项目唯一事实来源（手工维护）
 │   ├── manifest.rules / manifest.rules.v1-safe   # 两档选择集定义
-│   ├── patches/       # 本地自研补丁 9501/9601/9602
+│   ├── patches/       # 本地自研补丁 9501/9601/9602/9603
 │   └── seed.local.diff
 ├── scripts/          # 构建工具链（stage / build / audit / check-upstream / merge-manifest）
 ├── upstream-decisions.md   # 上游更新裁决账本
