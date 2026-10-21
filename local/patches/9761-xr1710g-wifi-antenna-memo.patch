@@ -1,0 +1,23 @@
+# Phase 2b 适配版（2026-10-21）：原体 aggregate/patches/root/9014-xr1710g-wifi-antenna-memo.patch
+#   rebase 到 467ae2e：原 hunk 尾上下文（system distance 后的 if config.radio）上游已变
+#   （新增 system set txpower + frag 分支）——截短尾上下文至 antenna 块结束；
+#   log(Configuring distance) 上下文行保留（它在 blank 与 if 之间，勿丢）。
+# 验证：对 openwrt main@63f702f1c git apply。
+# 档位：func（v1-safe 不含）
+diff --git a/package/network/config/wifi-scripts/files-ucode/lib/netifd/wireless/mac80211.sh b/package/network/config/wifi-scripts/files-ucode/lib/netifd/wireless/mac80211.sh
+--- a/package/network/config/wifi-scripts/files-ucode/lib/netifd/wireless/mac80211.sh
++++ b/package/network/config/wifi-scripts/files-ucode/lib/netifd/wireless/mac80211.sh
+@@ -100,8 +100,12 @@ function setup_phy(phy, config, data) {
+ 	else
+ 		config.txpower = 'auto';
+ 
++	let antenna_file = `/var/run/wifi-antenna-${phy}`;
++	let antenna_config = `${config.txantenna} ${config.rxantenna}`;
++
+ 	log(`Configuring '${phy}' distance: ${config.distance}`);
+ 	if (antenna_changed) {
+ 		log(`Setting antenna for '${phy}' txantenna: ${config.txantenna}, rxantenna: ${config.rxantenna}`);
+-		system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna} >/dev/null 2>&1`);
++		if (!system(`iw phy ${phy} set antenna ${antenna_config} >/dev/null 2>&1`))
++			fs.writefile(antenna_file, antenna_config);
+ 	}

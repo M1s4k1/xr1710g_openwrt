@@ -70,6 +70,7 @@
 9758-9058-xr1710g-hwrng-scu-clock-order.patch    # 理由: hwrng/TRNG SCU 时钟门顺序（补漏：Phase 2b）
 9759-9059-xr1710g-hwrng-scu-dts.patch    # 理由: hwrng/TRNG DTS（补漏：Phase 2b）
 9760-9061-xr1710g-airoha-npu-mailbox-recovery.patch    # 理由: NPU mailbox 恢复（元补丁：生成 target 9999-30..35）（补漏：Phase 2b）
+9761-xr1710g-wifi-antenna-memo.patch    # 理由: wifi-scripts 天线备忘（天线未变则跳过 iw set antenna；Phase 2b 适配版：截短尾上下文）
 9713-regdb-us-6ghz-no-no-ir.patch -> package/firmware/wireless-regdb/patches/    # 理由: US 6GHz 去 NO-IR（复制型：包源码 patch）
 9714-regdb-us-power-limits-uni1-29.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-1 29dBm 功率上限（复制型）
 9715-regdb-us-unii3-4-160mhz-30.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-3/4 160MHz 30dBm（复制型）
