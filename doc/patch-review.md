@@ -176,13 +176,13 @@ ai-recommended-tier: pending
 ai-risk: low
 ai-confidence: low
 ai-validation: 核对 XR1710G DTS 是否含 rtl8261c 节点 / PHY LED 定义（对照 aggregate DTS 补丁与 naoki RTL826x SerDes 提交 45bd32397）
-ai-open-questions: XR1710G 的 10G SerDes 器件是否为 rtl8261c（若是则 firmware 补丁可能适用）
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: XR1710G 的 10G SerDes 器件是否为 rtl8261c（若是则 firmware 补丁可能适用）——已取证（2026-10-21）：上游两提交仅覆盖 W1700K（18304dd 只改 an7581-w1700k-ubi.dts 与 01_leds 的 w1700k 分支；5d0c434 只改 an7581.mk 的 Device/gemtek_w1700k-ubi）；我们板镜像条目（aggregate 9000，真机验证）DEVICE_PACKAGES 仅 rtl826x-firmware，而同源 fanboy/09（default 活动档）给 W1700K 额外配 kmod-phy-rtl8261ce——两块板待遇分明，形成对照
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 上游两提交仅覆盖 W1700K；aggregate 作者按真机验证给 XR1710G 只配 rtl826x-firmware（同源 fanboy/09 给 W1700K 额外配 rtl8261ce kmod+固件，形成对照）；若将来实机 10G 口异常定位到 PHY 固件缺失，补一行 DEVICE_PACKAGES 成本极低，届时翻本条
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-006
