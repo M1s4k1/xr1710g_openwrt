@@ -13,6 +13,9 @@
 | build | `build-mine.sh` | `.stage/`、源码树和产物 | 报告源码树清理风险 |
 | ci | workflow_dispatch | GitHub artifact/release | release 单独确认 |
 
+**批准门**：每个阶段完成后都要停下来向用户报告并取得批准，不得连续推进
+（见 SKILL.md「单步执行与批准门」与 safety.md「阶段批准门」）。
+
 ## inspect 命令
 
 ```bash
