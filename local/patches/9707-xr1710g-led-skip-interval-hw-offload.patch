@@ -1,0 +1,19 @@
+# Source: 本仓库移植（2026-10-21 triage；原体 aggregate/patches/root/9031-base-files-led-skip-interval-hw-offload.patch，genshanxinli@244d433）
+# Upstream: 见原头
+# Reason: LED skip interval 硬件卸载（apply 干净）
+# 移植验证：对 openwrt main@63f702f1c git apply --check 干净
+# 档位：仅 func（v1-safe 最小集不含）；原头决策记录保留于下。
+diff --git a/package/base-files/files/etc/init.d/led b/package/base-files/files/etc/init.d/led
+index 79fdd45..5aab9c4 100644
+--- a/package/base-files/files/etc/init.d/led
++++ b/package/base-files/files/etc/init.d/led
+@@ -131,7 +131,8 @@ load_led() {
+ 					[ -e "/sys/class/leds/${sysfs}/$m" ] && \
+ 						echo 1 > /sys/class/leds/${sysfs}/$m
+ 				done
+-				echo $interval > /sys/class/leds/${sysfs}/interval 2>/dev/null
++				[ "$(cat /sys/class/leds/${sysfs}/offloaded 2>/dev/null)" = "1" ] || \
++					echo $interval > /sys/class/leds/${sysfs}/interval 2>/dev/null || true
+ 			}
+ 			;;
+ 

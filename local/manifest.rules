@@ -21,3 +21,27 @@
 9601-xr1710g-network-yyh-align.patch        # 理由: 镜像初始网络配置（br-lan=eth2 lan2 lan3 / LAN=192.168.2.1 / wan device=eth1）；架构转向后由修改型改创建型
 9602-xr1710g-led-yyh-align.patch            # 理由: LED dev 名纠正（9501 改名后 netdev 绑定失效致灯灭）；同改创建型
 9603-xr1710g-packages-argon-i18n.patch      # 理由: 预装 Argon 主题/配置包 + 完整中文语言包（packages-xr1710g feed + i18n lmo + uci-defaults 默认中文）
+
+# ── 97xx：triage 移植（2026-10-21；仅 func 档，v1-safe 不含）──
+# 来源：aggregate 退役前的小补丁逐个试应用筛选（12 个 apply 干净 + 7 个包源码 patch 复制型）。
+# 未移植：9010/9014（wifi-scripts mac80211.sh 上游已变，需 rebase——待办）；
+#         9067（mt76 pin/固件 swap——Phase 2a 决策点）。
+9701-xr1710g-spi33mhz.patch                  # 理由: SPI 33MHz 板级性能
+9702-xr1710g-banner-colored.patch            # 理由: 彩色登录 banner
+9703-xr1710g-dropbear-quiet-logs.patch       # 理由: dropbear 安静日志
+9704-xr1710g-snd-soc-off.patch               # 理由: 关闭声卡（本板无音频输出）
+9705-xr1710g-silence-phy-led-error.patch     # 理由: 静默 PHY LED 报错
+9706-xr1710g-airoha-no-carrier-rx-stats.patch   # 理由: no-carrier 时 RX 统计（airoha_eth）
+9707-xr1710g-led-skip-interval-hw-offload.patch # 理由: LED skip interval 硬件卸载
+9708-xr1710g-iwinfo-freqlist-per-radio.patch   # 理由: iwinfo 每射频频率列表
+9709-xr1710g-mlo-hide-mesh.patch             # 理由: 隐藏 MLO mesh 接口
+9710-ledtrig-netdev-link-mode-mutex.patch    # 理由: ledtrig-netdev link mode 互斥修复
+9711-net-phy-realtek-rtl826x-led.patch       # 理由: rtl826x PHY LED 硬件控制（PR #24034 内容，主线尚无）
+9712-mt76-mac80211-debugfs.patch             # 理由: per-STA debugfs 使能（符号默认注释，排障时开）
+9713-regdb-us-6ghz-no-no-ir.patch -> package/firmware/wireless-regdb/patches/    # 理由: US 6GHz 去 NO-IR（复制型：包源码 patch）
+9714-regdb-us-power-limits-uni1-29.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-1 29dBm 功率上限（复制型）
+9715-regdb-us-unii3-4-160mhz-30.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-3/4 160MHz 30dBm（复制型）
+9716-mac80211-link-sta-capability.patch -> package/kernel/mac80211/patches/subsys/    # 理由: 导出 link_sta 能力上限 helper，mt76 速率控制系依赖（复制型）
+9717-firewall4-bonding-lower-devices.patch -> package/network/config/firewall4/patches/    # 理由: firewall4 解析 bonding 下带设备（复制型）
+9718-rpcd-exec-observe-EOF.patch -> package/system/rpcd/patches/    # 理由: rpcd exec 观察 EOF 后再失效管道 fd（复制型）
+9719-iwinfo-txpowerlist-wiphy-dump.patch -> package/network/utils/iwinfo/patches/    # 理由: iwinfo txpowerlist wiphy dump 修复（复制型）

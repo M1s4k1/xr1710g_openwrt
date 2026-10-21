@@ -42,7 +42,9 @@ echo "== [B] 清单补丁存在 =="
 miss=0
 for R in "$RULES" "$SAFE"; do
   [[ -f "$R" ]] || continue
-  while IFS= read -r p; do
+  while IFS= read -r entry; do
+    # 兼容复制型行：<file>.patch -> <target-dir>，取 -> 前的文件名
+    p="${entry%% -> *}"
     [[ -n "$p" ]] || continue
     [[ -f "$ROOT/local/patches/$p" ]] || { fail "$(basename "$R"): 补丁不存在 local/patches/$p"; miss=$((miss+1)); }
   done < <(grep -vE '^\s*#|^\s*$' "$R" | sed 's/[[:space:]]*#.*$//' | sed 's/[[:space:]]*$//')
