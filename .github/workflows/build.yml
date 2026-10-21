@@ -8,26 +8,30 @@ name: build
 # 仓库定位（2026-10-21 架构转向后）：以 OpenWrt 主线为基座，本仓库只带差异。
 #   CI 组合两份物料：① 本仓库（local/ 补丁集 + config/）；② OpenWrt 源码树（pin 到
 #   config/source-lock.env 的 OPENWRT_REF）。
-#   流程：clone openwrt@pin → apply-patches 应用本地补丁集 → audit → 编译 .itb → 上传产物。
+#   流程：clone openwrt@pin → 内核版本门禁 → audit → apply-patches 应用本地补丁集
+#         → feeds + defconfig + seed + 符号门禁 → make → 上传产物。
+#
+# 触发方式：仅手动（workflow_dispatch）——Actions 页选 dev 分支 → Run workflow →
+#   选 profile（首次刷机建议 v1-safe；func = 含 NPU offload 全栈的正式档）。
 
 on:
   workflow_dispatch:
     inputs:
       profile:
-        description: '档位：func=正式档 / v1-safe=保守档（首次刷机建议）'
+        description: '档位：v1-safe=保守档（首次刷机建议，7 补丁）/ func=正式档（100 补丁，含 NPU offload 全栈）'
         default: 'v1-safe'
         required: true
         type: choice
         options:
-          - func
           - v1-safe
+          - func
       openwrt_ref:
-        description: 'OpenWrt 源码树 ref（默认 = source-lock.env 的 pin，Linux 6.18.44 基线快照）'
+        description: 'OpenWrt 源码树 ref（默认 = source-lock.env 的 pin，Linux 6.18.55 基线快照）'
         default: '63f702f1c0cebe2587aac10b63a02e964fc2a558'
         required: true
       create_release:
         description: '构建成功后是否自动创建 GitHub Release'
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -40,6 +44,7 @@ jobs:
     env:
       PROFILE: ${{ github.event.inputs.profile || 'v1-safe' }}
       TREE: ${{ github.workspace }}/openwrt
+      MINE: ${{ github.workspace }}/mine
     steps:
       - name: 清理磁盘空间（释放 ~35GB 冗余预装套件）
         run: |
@@ -51,18 +56,35 @@ jobs:
         with:
           path: mine
 
+      - name: 读取版本锁定（source-lock.env）
+        id: lock
+        run: |
+          set -euo pipefail
+          PIN="$(grep -E '^OPENWRT_REF=' "$MINE/config/source-lock.env" | head -1 | cut -d= -f2-)"
+          KVER="$(grep -E '^LINUX_VERSION=' "$MINE/config/source-lock.env" | head -1 | cut -d= -f2-)"
+          [[ -n "$PIN" && -n "$KVER" ]] || { echo "::error::source-lock.env 解析失败"; exit 1; }
+          echo "pin=$PIN" >> "$GITHUB_OUTPUT"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          echo "锁定：OpenWrt $PIN / Linux $KVER"
+
       - name: 克隆 OpenWrt 源码树（pin ref）
         run: |
           set -euo pipefail
+          REF_INPUT="${{ github.event.inputs.openwrt_ref || '' }}"
+          REF="${REF_INPUT:-${{ steps.lock.outputs.pin }}}"
+          if [[ -n "$REF_INPUT" && "$REF_INPUT" != "${{ steps.lock.outputs.pin }}" ]]; then
+            echo "::warning::openwrt_ref 输入($REF_INPUT) 与 source-lock pin 不一致——补丁上下文可能不匹配"
+          fi
           git clone https://github.com/openwrt/openwrt.git "$TREE"
           cd "$TREE"
-          git checkout -q "${{ github.event.inputs.openwrt_ref || '63f702f1c0cebe2587aac10b63a02e964fc2a558' }}"
+          git checkout -q "$REF"
           echo "OpenWrt commit: $(git rev-parse --short HEAD)"
-          # 内核版本硬门禁：锁定 6.18.55（与 source-lock.env 一致）
-          if grep -q 'LINUX_VERSION-6.18.*=.*\.55' target/linux/generic/kernel-6.18 2>/dev/null; then
-            echo "✓ 内核版本验证通过：Linux 6.18.55"
+          # 内核版本硬门禁：必须等于 source-lock.env 的 LINUX_VERSION
+          KVER="${{ steps.lock.outputs.kver }}"
+          if grep -q "LINUX_VERSION-6\.18.*=.*\.${KVER#6.18.}" target/linux/generic/kernel-6.18 2>/dev/null; then
+            echo "✓ 内核版本验证通过：Linux $KVER"
           else
-            echo "::error::当前 OpenWrt 树内核版本非 6.18.55，构建补丁集必将失败！请检查 openwrt_ref！"
+            echo "::error::当前 OpenWrt 树内核版本非 $KVER，构建补丁集必将失败！请检查 openwrt_ref！"
             grep 'LINUX_VERSION-6.18' target/linux/generic/kernel-6.18 2>/dev/null || true
             exit 1
           fi
@@ -76,37 +98,49 @@ jobs:
       - name: ccache 缓存配置
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: openwrt-${{ env.PROFILE }}
-          restore-keys: openwrt-${{ env.PROFILE }}
+          key: openwrt-${{ env.PROFILE }}-${{ github.event.inputs.openwrt_ref || 'pin' }}
+          restore-keys: openwrt-${{ env.PROFILE }}-
           max-size: 3G
 
       - name: 仓库自检 (audit-local)
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/mine"
+          cd "$MINE"
           bash scripts/audit-local.sh
 
-      - name: 应用本地补丁集（apply-patches）
+      - name: 应用本地补丁集（apply-patches，含 pin 校验）
         run: |
           set -euo pipefail
           export LC_ALL=C LANG=C
-          bash "$GITHUB_WORKSPACE/mine/scripts/apply-patches.sh" \
+          bash "$MINE/scripts/apply-patches.sh" \
             --tree "$TREE" --tier "$PROFILE"
 
-      - name: 配置 ccache 到构建流程
+      - name: 配置构建（feeds + defconfig + seed + 符号门禁）
         run: |
           set -euo pipefail
-          # 在 make 之前注入 CONFIG_CCACHE=y
           cd "$TREE"
           cp -f feeds.conf.default feeds.conf
-          cat "$GITHUB_WORKSPACE/mine/config/feeds.custom.conf" >> feeds.conf
+          cat "$MINE/config/feeds.custom.conf" >> feeds.conf
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           make defconfig
-          cat "$GITHUB_WORKSPACE/mine/local/seed.local.diff" >> .config
+          # 保证前一段以换行结尾，避免两段 seed 粘连
+          [[ -n "$(tail -c1 .config 2>/dev/null)" ]] && printf '\n' >> .config
+          cat "$MINE/local/seed.local.diff" >> .config
           make defconfig
+          # 符号门禁①：目标设备必须选中（F15 教训：kconfig 静默忽略未知符号）
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y$' .config \
+            || { echo "::error::.config 未选中 gemtek_xr1710g-ubi"; exit 1; }
+          # 符号门禁②：seed 的 =y 符号逐一进 .config（丢了就是构建出来但不装进镜像）
+          missing=0
+          while IFS= read -r sym; do
+            grep -q "^${sym}=y$" .config || { echo "::error::seed 符号未进 .config：$sym"; missing=1; }
+          done < <(grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$MINE/local/seed.local.diff" | cut -d= -f1)
+          [[ "$missing" == 0 ]] || exit 1
+          # ccache 注入
           echo 'CONFIG_CCACHE=y' >> .config
           echo "CONFIG_CCACHE_DIR=\"$GITHUB_WORKSPACE/.ccache\"" >> .config
+          echo "✓ 配置就绪（目标已选中 + seed 符号全进）"
 
       - name: 执行固件构建 (make)
         run: |
@@ -114,6 +148,10 @@ jobs:
           export LC_ALL=C LANG=C
           cd "$TREE"
           JOBS="$(nproc)" make -j"$JOBS" V=s CONFIG_VERSION_DIST="OpenWrt $PROFILE" 2>&1 | tee "$GITHUB_WORKSPACE/build-$PROFILE.log"
+          if ! ls bin/targets/airoha/an7581/*.itb >/dev/null 2>&1; then
+            echo "::error::构建完成但未找到 .itb 产物"; exit 1
+          fi
+          ls -la bin/targets/airoha/an7581/*.itb
 
       - name: 上传构建日志
         if: always()
@@ -158,12 +196,12 @@ jobs:
           name: "XR1710G 固件构建 #${{ github.run_number }} (${{ github.event.inputs.profile || 'v1-safe' }})"
           body: |
             ### 构建信息
-            - **档位 (Profile)**: `${{ github.event.inputs.profile || 'v1-safe' }}`
-            - **基座**: OpenWrt main @ `${{ github.event.inputs.openwrt_ref || '63f702f1c' }}`（Linux 6.18.55）
-            - **架构**: OpenWrt 主线为基座 + 本地补丁集（2026-10-21 转向；aggregate 已退役为参考）
+            - **档位 (Profile)**: `${{ github.event.inputs.profile || 'v1-safe' }}`（v1-safe = 板级使能最小集 7 补丁；func = 含 NPU offload 全栈 100 补丁）
+            - **基座**: OpenWrt main @ `${{ github.event.inputs.openwrt_ref || '63f702f1c' }}`（Linux 6.18.55，mt76 467ae2e3）
+            - **架构**: OpenWrt 主线为基座 + 本地补丁集（2026-10-21 转向；aggregate 已移出仓库）
             - **网口映射**: 10G-1=WAN(eth1), 10G-2=LAN(eth2), 1G-1=LAN(lan2), 1G-2=LAN(lan3)
             - **默认 LAN IP**: `192.168.2.1`
-            - **注意**: NPU offload 栈尚未移植（Phase 2）——本版本不含硬件卸载能力
+            - **功能**: NPU offload / PPE flow / flowsense / MLO / bridge-hw-offload（func 档）；中文界面 + Argon 主题
           files: xr1710g-firmware-*.tar.gz
           make_latest: true
           prerelease: false
