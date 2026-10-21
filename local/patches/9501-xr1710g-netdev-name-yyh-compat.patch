@@ -7,7 +7,7 @@
 #     10G-2 (gdm4/phy5) -> eth2   LAN
 #     1G-1  (gsw_port1) -> lan2   LAN
 #     1G-2  (gsw_port2) -> lan3   LAN（不变）
-# 依赖：必须排在 9000 / 9001 之后（它们创建 dts 与 02_network 条目）。
+# 依赖：必须排在 9401 / 9402 之后（它们创建 Device 条目与板 DTS；架构转向后由 aggregate 9000/9001 移植而来）。
 --- a/target/linux/airoha/dts/an7581-xr1710g-ubi.dts
 +++ b/target/linux/airoha/dts/an7581-xr1710g-ubi.dts
 @@ -321,4 +321,4 @@

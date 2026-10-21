@@ -1,6 +1,10 @@
 # Source: 本仓库自研（local/patches/）
 # Upstream: n/a
 # Reason: 预装常用运维工具、UPnP、Argon 主题与完整中文语言支持（含 13 个完整汉化 lmo 与 uci-defaults 默认中文初始化）
+# 手术记录（2026-10-21 架构转向）：剥除两处 aggregate 内部修改 hunk——
+#   packages-xr1710g/README.md（aggregate 文档，主线不存在该文件；弃）
+#   scripts/audit-config.sh（aggregate 工具；seed 符号审计改由本仓库 audit-local.sh 承担）
+# 其余（Argon 包树 + i18n lmo 创建）全部保留。
 diff --git a/files/etc/uci-defaults/98-xr1710g-luci-default-lang b/files/etc/uci-defaults/98-xr1710g-luci-default-lang
 new file mode 100755
 index 0000000..9e03d04
@@ -2153,32 +2157,6 @@ wRR!RJ2f6ZI<XM*ia~>8iyNX=R;>-P$eDf)C6+2(^S9E3^xh4lt3tRdB0%aUZ-v9sr
 literal 0
 HcmV?d00001
 
-diff --git a/packages-xr1710g/README.md b/packages-xr1710g/README.md
-index ab55fc7..e513145 100644
---- a/packages-xr1710g/README.md
-+++ b/packages-xr1710g/README.md
-@@ -7,4 +7,19 @@
- #   锁定 commit：dd9ecfeefa268b764efebee0d76f3149b3c01f12（2026-08-12）
- #   路径：package/luci-app-airoha-recovery/（fetched 2026-08-17，7 文件）
- # 依赖：+luci-base +uboot-envtools（官方）
--# 升级：对比上游新 commit 后整体替换本目录，并在 FIXES.md F12 记录。
-\ No newline at end of file
-+# 升级：对比上游新 commit 后整体替换本目录，并在 FIXES.md F12 记录。
-+# ── luci-theme-argon ──
-+# 现代扁平化 LuCI 主题，支持自适应布局、暗黑模式切换与登录页背景定制
-+# 来源：jerrykuku/luci-theme-argon，标签 v2.4.7
-+#   锁定 commit：2a28799ca063aba7edc3314143b93c8325c86df4（2026-08-24）
-+#   路径：package/luci-theme-argon/
-+# 依赖：+USE_APK:wget-any +!USE_APK:wget +jsonfilter
-+# 升级：对比上游新 commit 后整体替换本目录。
-+
-+# ── luci-app-argon-config ──
-+# Argon 主题设置面板（毛玻璃透明度、主色调、必应/壁纸源配置）
-+# 来源：jerrykuku/luci-app-argon-config，分支 master
-+#   锁定 commit：3e099a37c3f71d0de677f1b6b0f4bffd57d91dac（2026-04-13）
-+#   路径：package/luci-app-argon-config/
-+# 依赖：+luci-theme-argon
-+# 升级：对比上游新 commit 后整体替换本目录。
 diff --git a/packages-xr1710g/package/luci-app-argon-config/LICENSE b/packages-xr1710g/package/luci-app-argon-config/LICENSE
 new file mode 100644
 index 0000000..261eeb9
@@ -25821,17 +25799,3 @@ index 0000000..70178c2
 +					input.focus();
 +			//]]></script>
 +{% include("themes/" + theme + "/footer_login") %}
-diff --git a/scripts/audit-config.sh b/scripts/audit-config.sh
-index 0341fe3..94d28b8 100755
---- a/scripts/audit-config.sh
-+++ b/scripts/audit-config.sh
-@@ -127,7 +127,7 @@ while IFS= read -r raw; do
- done < "$SEED"   # 必须喂**整份文件**：注释行要参与（承载 F164-ALLOW-RESOLVED-M 标记）
- 
- if (( missing > 0 || mismatch > 0 )); then
--  echo "seed 符号审计失败：缺失 $missing 个、取值不符 $mismatch 个（共审 $checked 个活动符号）" >&2
-+  echo "seed 符号审计失败：缺失 $missing 个、取值不符 $mismatch 个（共审 ${checked} 个活动符号）" >&2
-   exit 1
- fi
--echo "✓ seed 符号审计通过（$checked 个活动符号取值全部命中；已登记降级 $allowed，脆弱写法警告 $fragile）"
-+echo "✓ seed 符号审计通过（${checked} 个活动符号取值全部命中；已登记降级 ${allowed}，脆弱写法警告 ${fragile}）"

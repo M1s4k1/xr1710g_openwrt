@@ -1,0 +1,143 @@
+# Source: 本仓库移植（2026-10-21 架构转向：aggregate 退役，OpenWrt 主线为基座）
+#   原体：aggregate/patches/root/9000-xr1710g-common.patch（genshanxinli/xr1710g-openwrt@244d433）
+# Upstream: n/a（XR1710G 板级使能，主线尚无；长期方向为社区 PR #22397）
+# Reason: 在 an7581.mk 注册 Device/gemtek_xr1710g-ubi 与 DEVICE_PACKAGES。
+#   移植验证：对 openwrt main@63f702f1c（2026-10-21, kernel 6.18.55）git apply --check 干净
+#   （04499f8 overlay 重构未伤及 W1700K Device 块区域）。
+# 依赖：无（本补丁创建镜像条目；板 DTS 由 9402 创建，9501 依赖 9402）。
+diff --git a/package/boot/uboot-airoha/Makefile b/package/boot/uboot-airoha/Makefile
+index 5db35c0..2da4651 100644
+--- a/package/boot/uboot-airoha/Makefile
++++ b/package/boot/uboot-airoha/Makefile
+@@ -24,6 +24,13 @@ define U-Boot/an7581_gemtek_w1700k
+   BUILD_SUBTARGET:=an7581
+ endef
+ 
++define U-Boot/an7581_gemtek_xr1710g
++  NAME:=Gemtek XR1710G (UBI)
++  UBOOT_CONFIG:=an7581_xr1710g
++  BUILD_DEVICES:=gemtek_xr1710g-ubi
++  BUILD_SUBTARGET:=an7581
++endef
++
+ define U-Boot/an7581_nokia_valyrian
+   NAME:=Nokia Valyrian
+   UBOOT_CONFIG:=an7581_nokia_valyrian
+@@ -83,6 +90,7 @@ endef
+ 
+ UBOOT_TARGETS := \
+ 	an7581_gemtek_w1700k \
++	an7581_gemtek_xr1710g \
+ 	an7581_nokia_valyrian \
+ 	an7581_nokia_xg-040g-md \
+ 	an7581_rfb \
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581 b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
+index c0a5c9f..fb850a4 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
++++ b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
+@@ -11,7 +11,35 @@
+ 
+ board=$(board_name)
+ 
++ubootenv_add_ubi_xr1710g() {
++	. /lib/upgrade/nand.sh
++	local envubi="$(nand_find_ubi ubi)"
++	local dev="/dev/$(nand_find_volume "$envubi" ubootenv)"
++	local dev2="/dev/$(nand_find_volume "$envubi" ubootenv2)"
++
++	# YYH2913/http-uboot-xr1710g uses CONFIG_ENV_SIZE=0x4000. The generic
++	# 0x1f000 layout writes a CRC U-Boot does not accept (F66 root cause).
++	ubootenv_add_uci_config "$dev" "0x0" "0x4000" "0x1f000" "1"
++	ubootenv_add_uci_config "$dev2" "0x0" "0x4000" "0x1f000" "1"
++}
++
+ case "$board" in
++gemtek,xr1710g-ubi)
++	# Preserved config from an older image may point at the correct dynamic UBI
++	# volumes while still using the incompatible generic 0x1f000 size. Keep only
++	# the exact redundant 0x4000 layout expected by YYH2913 U-Boot.
++	# NOTE: /etc/config/ubootenv always exists here (touched above), so the real
++	# discriminator is /etc/fw_env.config.
++	if [ -e /etc/fw_env.config ] &&
++		[ "$(grep -Ec '^/dev/ubi[0-9]+_[0-9]+[[:space:]]+0x0[[:space:]]+0x4000[[:space:]]+0x1f000[[:space:]]+1$' /etc/fw_env.config)" -eq 2 ]; then
++		ubootenv_add_app_config || true
++		exit 0
++	fi
++
++	rm -f /etc/config/ubootenv /etc/fw_env.config /etc/fw_sys.config
++	touch /etc/config/ubootenv
++	ubootenv_add_ubi_xr1710g
++	;;
+ gemtek,w1700k-ubi|\
+ nokia,xg-040g-md-ubi)
+ 	ubootenv_add_ubi_default
+
+diff --git a/target/linux/airoha/an7581/base-files/etc/board.d/02_network b/target/linux/airoha/an7581/base-files/etc/board.d/02_network
+index 107ca37..fe4a0ba 100644
+--- a/target/linux/airoha/an7581/base-files/etc/board.d/02_network
++++ b/target/linux/airoha/an7581/base-files/etc/board.d/02_network
+@@ -17,6 +17,9 @@ an7581_setup_interfaces()
+ 	gemtek,w1700k-ubi)
+ 		ucidef_set_interfaces_lan_wan "lan2 lan3 lan4" "wan"
+ 		;;
++	gemtek,xr1710g-ubi)
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
++		;;
+ 	nokia,valyrian)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 10g" "wan"
+ 		;;
+diff --git a/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh b/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
+index d8cf5e2..9b64787 100644
+--- a/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
++++ b/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
+@@ -34,6 +34,7 @@ platform_do_upgrade() {
+ 
+ 	case "$board" in
+ 		gemtek,w1700k-ubi|\
++		gemtek,xr1710g-ubi|\
+ 		nokia,xg-040g-md-ubi|\
+ 		quantum,q1000k-ubi)
+ 			fit_do_upgrade "$1"
+diff --git a/target/linux/airoha/image/an7581.mk b/target/linux/airoha/image/an7581.mk
+index eb77df6..d1be04d 100644
+--- a/target/linux/airoha/image/an7581.mk
++++ b/target/linux/airoha/image/an7581.mk
+@@ -127,6 +127,38 @@ define Device/gemtek_w1700k-ubi
+   SOC := an7581
+ endef
+ TARGET_DEVICES += gemtek_w1700k-ubi
++define Device/gemtek_xr1710g-ubi
++  DEVICE_VENDOR := Gemtek
++  DEVICE_MODEL := XR1710G
++  DEVICE_VARIANT := UBI
++  DEVICE_ALT0_VENDOR := Brightspeed
++  DEVICE_ALT0_MODEL := XR1710G
++  DEVICE_ALT0_VARIANT := UBI
++  DEVICE_DTS := an7581-xr1710g-ubi
++  DEVICE_COMPAT_VERSION := 2.0
++  DEVICE_COMPAT_MESSAGE := Partition table has been changed to cooperate \
++       with the vendor bootloader with regard to the BMT/BBT partition at \
++       the end of flash. A reinstall including corrected chainloader is needed.
++  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk \
++		    kmod-hwmon-nct7802 kmod-mt7996-firmware \
++		    rtl826x-firmware
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  UBOOTENV_IN_UBI := 1
++  KERNEL_IN_UBI := 1
++  KERNEL := kernel-bin | gzip
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
++  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
++  IMAGES := sysupgrade.itb
++  IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | append-metadata
++  ARTIFACTS := chainload-uboot.itb
++  ARTIFACT/chainload-uboot.itb := an7581-chainloader gemtek_xr1710g
++  SOC := an7581
++endef
++TARGET_DEVICES += gemtek_xr1710g-ubi
++
+ 
+ define Device/nokia_valyrian
+   DEVICE_VENDOR := Nokia

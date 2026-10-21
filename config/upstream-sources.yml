@@ -6,10 +6,11 @@
       "id": "openwrt",
       "url": "https://github.com/openwrt/openwrt.git",
       "ref": "refs/heads/main",
-      "baseline": "7f4f824691fb2258afe9eb9a37da46d3557c4043",
+      "baseline": "63f702f1c0cebe2587aac10b63a02e964fc2a558",
       "baseline_is_exact": true,
-      "purpose": "OpenWrt upstream base; inspect Airoha, generic Linux 6.18 and mt76 integration changes.",
-      "focus_paths": ["target/linux/airoha/", "target/linux/generic/", "package/kernel/mt76/"]
+      "role": "base",
+      "purpose": "构建基座（2026-10-21 起）：pin 见 config/source-lock.env；check-upstream.sh --fetch 跟踪领先量",
+      "focus_paths": ["target/linux/airoha/", "target/linux/generic/", "package/kernel/mt76/", "package/kernel/mac80211/"]
     },
     {
       "id": "yyh-openwrt",
@@ -44,7 +45,8 @@
       "ref": "refs/heads/ubi2-oc",
       "baseline": "ca46e0a4e",
       "baseline_is_exact": false,
-      "purpose": "Vendor/fanboy patch materials; compare against existing vendor/fanboy inputs.",
+      "enabled": false,
+      "purpose": "【已废弃 2026-10-21】架构转向后 W1700K 专用料不再进入构建；且登记基线 ca46e0a4e 已被 force-push 孤立（ubi2-oc 至少三次 force-push）。不重锚——如将来确需 W1700K 料，人工按需对账，不登记基线。",
       "focus_paths": ["patches/", "package/", "wifi-scripts/"]
     },
     {
