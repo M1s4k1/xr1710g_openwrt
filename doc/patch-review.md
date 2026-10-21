@@ -239,12 +239,12 @@ ai-risk: low
 ai-confidence: high
 ai-validation: 随内核 rebase 专项整体继承，无需单独跟进
 ai-open-questions: 无
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 约 25 个 generic backport 绝大多数与 XR1710G 无关（SFP/V4L2/MHI/mt7530/rtl8365mb/rockchip/Aquantia）；且它们是 openwrt 树自身补丁，rebase 到 6.18.5x 时随树自动继承，不作为独立候选合入，无独立动作
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: gilly-20261021-001
