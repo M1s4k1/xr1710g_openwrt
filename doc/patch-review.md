@@ -456,12 +456,12 @@ ai-risk: low
 ai-confidence: medium
 ai-validation: 对照本项目 seed.local.diff / stage 后的 .config，评估是否吸收 board build-in（影响首启可用性）
 ai-open-questions: build-in 是否会拖慢启动或与我们的最小镜像策略冲突
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施。同名设备、同款 board 文件的构建决策，naoki 真机验证过；落地形态明确（seed 链加 CONFIG 符号，与 9603 同类）。实施时对照 stage 后的 .config/seed 链确认 airoha-an7581-mt7996-board 当前档位与连带影响；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-006
