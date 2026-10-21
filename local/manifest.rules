@@ -50,13 +50,13 @@
 # ── 98xx：Phase 2a mt76 NPU 栈移植（2026-10-21；仅 func；复制型 → package/kernel/mt76/patches/）──
 # 打丁器说明：树侧由 OpenWrt 构建用 patch -p1 应用（带 fuzz），与 git apply 语义不同——
 #   本批移植以 patch -p1 -F3 --batch 对 mt76@467ae2e 实测干净为准。
-# ⚠ 半栈状态：33 个候选 26 个已移植；7 个需手工 rebase（0007/0015/0153/0156/0161/0162 +
-#   fanboy/07 生成的 HW_RRO release——3way 因补丁基为 naoki/YYH fork 线不可用）。
-#   func 档此状态未经构建验证（CI 跳过）且 NPU 功能不完整——刷机前必须补全或整体回退 98xx。
-# 编号空档（9804/9817/9825/9827）为上述失败件预留，rebase 成功后按原号补入。
+# 状态：33 个候选 30 个已全部落地（含 3 个适配版：9804 剥 superseded 段 / 9817 重锚 / 9832 重写）。
+#   func 档 NPU 栈已完整但**未经构建验证**（CI 跳过）——刷机前必须至少一次完整构建。
+# 编号空档（9825/9827）为历史上 rebase 失败件预留，最终以适配形态落入邻近号。
 9801-mt76-0001-wifi-mt76-mt7996-add-token-and-NPU-debugfs-counters.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0001；patch(1) 实测干净）
 9802-mt76-0003-wifi-mt76-mt7996-replace-direct-WTBL-access-with-MCU-for-station-statistics.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0003；patch(1) 实测干净）
 9803-mt76-0006-wifi-mt76-mt7996-refresh-power-limits-on-txpower-changes.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0006；patch(1) 实测干净）
+9804-mt76-0007-wifi-mt76-mt7996-enable-firmware-txpower-limit-controls.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0007；适配版：剥除已被上游吸收的 mcu.h enum/struct 段）
 9805-mt76-0008-wifi-mt76-mt7996-eeprom-power-unlock.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0008；patch(1) 实测干净）
 9806-mt76-0009-report-only-terminal-tx-failures.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0009；patch(1) 实测干净）
 9807-mt76-0005-wifi-mt76-mt7996-guard-txfree-overrun.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0005；patch(1) 实测干净）
@@ -69,6 +69,7 @@
 9814-mt76-0010-set-skb-device-for-npu-rx.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0010；patch(1) 实测干净）
 9815-mt76-0012-wifi-mt76-npu-del-sta.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0012；patch(1) 实测干净）
 9816-mt76-0013-wifi-mt76-mt7996-refresh-tx-agg-timer-under-npu-offload.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0013；patch(1) 实测干净）
+9817-mt76-0153-wifi-mt76-fix-npu-teardown-ordering.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0153；适配版：init.c 两 hunk 重锚+计数修正）
 9818-mt76-0016-wifi-mt76-mt7996-radar-detecting-chanctx.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0016；patch(1) 实测干净）
 9819-mt76-0017-wifi-mt76-mt7996-bypass-hwrro-sub64-ba.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0017；patch(1) 实测干净）
 9820-mt76-0018-wifi-mt76-mt7996-fix-dl-ofdma-after-sta-reconnect.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0018；patch(1) 实测干净）
@@ -80,3 +81,5 @@
 9828-mt76-0158-wifi-mt76-publish-npu-rx-buffers-after-refill.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0158；patch(1) 实测干净）
 9829-mt76-0159-wifi-mt76-preserve-npu-tx-ring-headroom.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0159；patch(1) 实测干净）
 9830-mt76-0160-wifi-mt76-mt7996-shutdown-device-before-restart.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0160；patch(1) 实测干净）
+9831-mt76-0162-wifi-mt76-stop-npu-before-unregistering-device.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0162；顺序链内干净）
+9832-mt76-hwrro-release-sessions-on-teardown.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（fanboy/07 载荷；适配版：RX_STOP hunk 按主线 MLO 重构重写）

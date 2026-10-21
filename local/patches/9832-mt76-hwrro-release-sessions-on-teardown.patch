@@ -1,0 +1,80 @@
+# Phase 2a 适配版（2026-10-21）：原体 = vendor/fanboy/07-mt76-release-hw-rro-session
+#   生成的载荷（release HW RRO sessions on BA teardown）。
+#   rebase 到 467ae2e：MLO 重构后 RX_START/RX_STOP 分支新增 mt7996_sta_ba_update、
+#   mcu_add_rx_ba 增 links 参数——hunk 已按主线 2214-2228 重写（头计数同步修正）。
+#   rro_id 字段主线已有（mt7996.h:310，注释明示 BA teardown 消费——上游有字段+
+#   事件写入，消费端由本补丁提供）；依赖 mt7996_mcu_wed_rro_reset_sessions（9802/0003）、
+#   mt7996_has_hwrro（9819/0017）。
+# 验证：patch -p1 -F3 --batch 顺序链内对 mt76@467ae2e。
+# 档位：func。
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -2219,14 +2219,21 @@ mt7996_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 				   ssn, params->buf_size);
+ 		ret = mt7996_mcu_add_rx_ba(dev, params, vif, links, true);
+ 		mt7996_sta_ba_update(&msta->ba_rx_mask, msta->ba_rx, params,
+ 				     !ret);
+ 		break;
+-	case IEEE80211_AMPDU_RX_STOP:
++	case IEEE80211_AMPDU_RX_STOP: {
++		u16 session_id = msta->deflink.rro_id[tid];
++
++		msta->deflink.rro_id[tid] = 0;
+ 		mt76_rx_aggr_stop(&dev->mt76, &msta->deflink.wcid, tid);
+ 		mt7996_sta_ba_update(&msta->ba_rx_mask, msta->ba_rx, params,
+ 				     false);
+ 		ret = mt7996_mcu_add_rx_ba(dev, params, vif, links, false);
++
++		if (session_id && mt7996_has_hwrro(dev))
++			mt7996_mcu_wed_rro_reset_sessions(dev, session_id);
+ 		break;
++	}
+ 	case IEEE80211_AMPDU_TX_OPERATIONAL:
+ 		mtxq->aggr = true;
+ 		mtxq->send_bar = false;
+--- a/mt7996/mcu.c
++++ b/mt7996/mcu.c
+@@ -779,6 +779,7 @@ mt7996_mcu_wed_rro_event(struct mt7996_dev *dev, struct sk_buff *skb)
+ 		while (skb->len >= sizeof(*e)) {
+ 			struct mt76_rx_tid *tid;
+ 			struct mt76_wcid *wcid;
++			struct mt7996_sta_link *msta_link;
+ 			u16 idx;
+ 
+ 			e = (void *)skb->data;
+@@ -791,10 +792,18 @@ mt7996_mcu_wed_rro_event(struct mt7996_dev *dev, struct sk_buff *skb)
+ 				break;
+ 
+ 			tid = rcu_dereference(wcid->aggr[e->tid]);
+-			if (!tid)
+-				break;
++			if (!tid) {
++				/* BA session is not tracked on the primary
++				 * link (secondary link or already torn down);
++				 * keep processing the remaining events. */
++				skb_pull(skb, sizeof(*e));
++				continue;
++			}
+ 
+ 			tid->id = le16_to_cpu(e->id);
++			msta_link = container_of(wcid, struct mt7996_sta_link,
++						 wcid);
++			msta_link->rro_id[e->tid] = tid->id;
+ 			skb_pull(skb, sizeof(*e));
+ 		}
+ 		break;
+--- a/mt7996/mt7996.h
++++ b/mt7996/mt7996.h
+@@ -301,6 +301,12 @@ struct mt7996_sta_link {
+ 	unsigned long changed;
+ 
+ 	struct mt76_connac_sta_key_conf bip;
++	/* firmware-assigned HW_RRO session id per RX TID, reported by the
++	 * UNI_WED_RRO_BA_SESSION_STATUS event; consumed at BA teardown to
++	 * release the firmware-side session.  Written from the WED RRO event
++	 * handler, read/cleared under dev->mt76.mutex in the BA teardown
++	 * path. */
++	u16 rro_id[IEEE80211_NUM_TIDS];
+ 
+ 	struct {
+ 		u8 flowid_mask;
