@@ -1,136 +1,63 @@
 #!/usr/bin/env bash
-# audit-local.sh — 本仓库 rules / 资源自检
+# audit-local.sh — 本仓库自检（架构转向后：OpenWrt 主线为基座）
 #
 # 检查项：
-#   [A] rules 语法：三类操作符合法、每条必带「理由」
-#   [B] rules 目标存在：- / ^ / + 的补丁路径都能在上游 MANIFEST 或 local/patches 找到
-#   [C] 本地补丁文件存在：local/patches/*.patch 都在 rules 里被「+」引用
+#   [A] 收录清单语法：每行一个补丁文件名，必须带「理由」
+#   [B] 清单补丁存在：清单中每个文件都在 local/patches/ 下
+#   [C] 收录完整：local/patches/*.patch 都被 func 或 v1-safe 清单收录
 #   [D] 配置归属纪律：local/files/ 必须为空（配置改动一律走 patch，不靠 files 覆盖）
-#       ——历史教训：曾用 local/files/etc/config/{network,wireless} 整文件覆盖上游、
-#         并夹带 SSID/密码/自定义 MAC 等**个人配置**，导致固件绑定特定机器。
-#         现约定：B 类环境适配一律由 local/patches/96xx-* 改写上游 files/ 源文件。
-#   [E] 端口命名/网段一致性：9501（改名）↔ 9601（引用同一套名字 + 钉死网段）↔ 9602（LED）
+#   [E] 端口命名/网段一致性：9501（改名）↔ 9601（同一套名字 + 钉死网段）↔ 9602（LED）
 #   [F] 固件不含个人配置：全仓扫描 SSID / 密码 / 自定义 MAC 等 C 类残留
+#   [G] git 历史不含个人配置（push 到公开仓库前必查）
+#   [H] seed 写法铁律（F164）：活动 CONFIG_* 行不得带尾随注释
 #
-# 用法：scripts/audit-local.sh [--upstream DIR]
+# 用法：scripts/audit-local.sh
 # 退出码：0 全过；1 有红
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck disable=SC1091
-source "$ROOT/scripts/source-resolver.sh"
-UPSTREAM="${UPSTREAM_DIR:-}"
-AGGREGATE_SOURCE_ARG=""
-AGGREGATE_REF_ARG=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --upstream) UPSTREAM="$2"; shift 2 ;;
-    --aggregate-source) AGGREGATE_SOURCE_ARG="$2"; shift 2 ;;
-    --aggregate-ref) AGGREGATE_REF_ARG="$2"; shift 2 ;;
-    *) echo "unknown arg: $1" >&2; exit 1 ;;
-  esac
-done
-
-source_resolve "$ROOT" "$AGGREGATE_SOURCE_ARG" "$AGGREGATE_REF_ARG" "$UPSTREAM"
-UPSTREAM="$AGGREGATE_DIR_RESOLVED"
 RED=0
 fail() { echo "  [FAIL] $*" >&2; RED=1; }
 ok()   { echo "  [ok]   $*"; }
 RULES="$ROOT/local/manifest.rules"
 SAFE="$ROOT/local/manifest.rules.v1-safe"
-MF="$UPSTREAM/patches/MANIFEST"
 
-echo "== [A] rules 语法与理由 =="
+echo "== [A] 收录清单语法与理由 =="
 for R in "$RULES" "$SAFE"; do
   [[ -f "$R" ]] || { fail "缺文件 $R"; continue; }
   n_bad=0
   while IFS= read -r line; do
-    s="${line%%# *}"
-    # 跳过注释与空行
-    [[ -z "${s// }" ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    # 规则行必须匹配 "符 路径"；`!` 额外带一个替换目标
-    if ! [[ "$line" =~ ^[[:space:]]*[-^+!][[:space:]]+[^[:space:]]+\.patch ]]; then
-      fail "$(basename "$R"): 非法规则行：$line"; n_bad=$((n_bad+1)); continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    # 清单行：<补丁文件名>.patch [# 理由]
+    if ! [[ "$line" =~ ^[[:space:]]*[^[:space:]#]+\.patch([[:space:]]|#|$) ]]; then
+      fail "$(basename "$R"): 非法清单行：$line"; n_bad=$((n_bad+1)); continue
     fi
-    if [[ "$line" =~ ^[[:space:]]*![[:space:]]+[^[:space:]]+\.patch[[:space:]]+[^[:space:]]+\.patch([[:space:]]|#|$) ]]; then
-      :
-    elif [[ "$line" =~ ^[[:space:]]*! ]]; then
-      fail "$(basename "$R"): 替换规则必须为 ! <旧补丁> <新补丁>：$line"; n_bad=$((n_bad+1)); continue
-    fi
-    # 必带理由
-    if ! [[ "$line" == *"理由"* ]]; then
-      fail "$(basename "$R"): 缺理由：$line"; n_bad=$((n_bad+1))
-    fi
+    [[ "$line" == *"理由"* ]] || { fail "$(basename "$R"): 缺理由：$line"; n_bad=$((n_bad+1)); }
   done < "$R"
   [[ "$n_bad" == 0 ]] && ok "$(basename "$R") 语法与理由齐全"
 done
 
-echo "== [B] rules 目标存在性 =="
-[[ -f "$MF" ]] || { fail "找不到上游 MANIFEST：$MF"; echo "（跳过 B/C）"; }
-if [[ -f "$MF" ]]; then
-  # 注：macOS 自带 bash 3.2 无 mapfile，用 while-read 兼容
-  MF_PATHS=()
-  while IFS= read -r _p; do [[ -n "$_p" ]] && MF_PATHS+=("$_p"); done \
-    < <(grep -oE 'patches/[^[:space:]]+\.patch' "$MF" | sort -u)
-  miss=0
-  for R in "$RULES" "$SAFE"; do
-    [[ -f "$R" ]] || continue
-    while IFS= read -r line; do
-      [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      [[ "$line" =~ ^[[:space:]]*([-^+!])[[:space:]]+([^[:space:]]+) ]] || continue
-      op="${BASH_REMATCH[1]}"; p="${BASH_REMATCH[2]}"
-      if [[ "$op" == "!" ]]; then
-        rest="${line#*"$p"}"
-        newp="${rest#* }"
-        newp="${newp%%[[:space:]#]*}"
-        [[ "$newp" == *.patch ]] || { fail "$(basename "$R"): 替换新补丁缺失：$line"; miss=$((miss+1)); continue; }
-        [[ "$p" != "$newp" ]] || { fail "$(basename "$R"): 替换新旧补丁相同：$p"; miss=$((miss+1)); continue; }
-        old_found=0; new_found=0
-        for m in "${MF_PATHS[@]}"; do
-          [[ "$m" == "$p" ]] && old_found=1
-          [[ "$m" == "$newp" ]] && new_found=1
-        done
-        [[ "$old_found" == 1 ]] || { fail "$(basename "$R"): 替换旧项不在 MANIFEST：$p"; miss=$((miss+1)); }
-        if [[ "$new_found" == 1 ]]; then
-          fail "$(basename "$R"): 替换新项已在 MANIFEST：$newp"; miss=$((miss+1))
-        else
-          case "$newp" in
-            patches/local/*) lp="$ROOT/local/patches/${newp#patches/local/}" ;;
-            patches/*)       lp="$ROOT/local/patches/${newp#patches/}" ;;
-            *)               lp="$ROOT/local/$newp" ;;
-          esac
-          [[ -f "$lp" || -f "$UPSTREAM/$newp" ]] || { fail "$(basename "$R"): 替换新补丁不存在：$newp"; miss=$((miss+1)); }
-        fi
-        continue
-      fi
-      if [[ "$op" == "+" ]]; then
-        # 语义路径 "patches/local/9501-xxx.patch" 对应物理文件 local/patches/9501-xxx.patch
-        case "$p" in
-          patches/local/*) lp="$ROOT/local/patches/${p#patches/local/}" ;;
-          patches/*)       lp="$ROOT/local/patches/${p#patches/}" ;;
-          *)               lp="$ROOT/local/$p" ;;
-        esac
-        [[ -f "$lp" ]] || { fail "$(basename "$R"): 本地补丁不存在 ${lp#$ROOT/}"; miss=$((miss+1)); }
-      else
-        found=0
-        for m in "${MF_PATHS[@]}"; do [[ "$m" == "$p" ]] && { found=1; break; }; done
-        [[ "$found" == 1 ]] || { fail "$(basename "$R"): 目标不在 MANIFEST：$p"; miss=$((miss+1)); }
-      fi
-    done < "$R"
-  done
-  [[ "$miss" == 0 ]] && ok "全部 rules 目标可解析"
-fi
+echo "== [B] 清单补丁存在 =="
+miss=0
+for R in "$RULES" "$SAFE"; do
+  [[ -f "$R" ]] || continue
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    [[ -f "$ROOT/local/patches/$p" ]] || { fail "$(basename "$R"): 补丁不存在 local/patches/$p"; miss=$((miss+1)); }
+  done < <(grep -vE '^\s*#|^\s*$' "$R" | sed 's/[[:space:]]*#.*$//' | sed 's/[[:space:]]*$//')
+done
+[[ "$miss" == 0 ]] && ok "清单补丁全部存在"
 
-echo "== [C] 本地补丁都被引用 =="
+echo "== [C] 收录完整（local/patches 都被某档收录）=="
 if compgen -G "$ROOT/local/patches/*.patch" >/dev/null; then
   unref=0
   for f in "$ROOT/local/patches/"*.patch; do
-    b="patches/local/$(basename "$f")"
-    grep -qF "$b" "$RULES" || { fail "本地补丁未被 rules 引用：$b"; unref=$((unref+1)); }
+    b="$(basename "$f")"
+    grep -qF "$b" "$RULES" || grep -qF "$b" "$SAFE" \
+      || { fail "本地补丁未被任何档位收录：$b"; unref=$((unref+1)); }
   done
-  [[ "$unref" == 0 ]] && ok "local/patches 全部被 rules 引用"
+  [[ "$unref" == 0 ]] && ok "local/patches 全部被收录"
 else
   ok "（无本地补丁）"
 fi
@@ -140,8 +67,7 @@ if [[ -e "$ROOT/local/files" ]]; then
   if [[ -d "$ROOT/local/files" ]]; then
     leftover=0
     while IFS= read -r f; do
-      # ⚠ $f 后紧跟非 ASCII 必须用 ${f} 界定：否则 bash 把 UTF-8 首字节并入变量名，
-      #   set -u 下报 `f\xef: unbound variable`（本项目已复发多次，见 macos-bash-portability）。
+      # ⚠ $f 后紧跟非 ASCII 必须用 ${f} 界定（bash 3.2 UTF-8 变量名坑，见 macos-bash-portability）
       fail "local/files/ 仍有遗留：${f}（配置改动请改写成 local/patches/96xx-*.patch，勿 Files 覆盖）"
       leftover=$((leftover+1))
     done < <(find "$ROOT/local/files" -type f 2>/dev/null)
@@ -161,31 +87,26 @@ P9602="$ROOT/local/patches/9602-xr1710g-led-yyh-align.patch"
 for p in "$P9501" "$P9601" "$P9602"; do
   [[ -f "$p" ]] || fail "缺本地补丁：$(basename "$p")"
 done
-# 辅助：取补丁里的**新增行**（以 + 开头、排除 +++ 文件头）。
-# 必须只看 + 行：diff 的 - 行是"改前旧值"，把检测误判为仍在使用旧名。
+# 辅助：取补丁里的**新增行**（以 + 开头、排除 +++ 文件头）
 _new_lines() { grep -E '^\+' "$1" | grep -vE '^\+\+\+' ; }
 
 if [[ -f "$P9501" && -f "$P9601" && -f "$P9602" ]]; then
-  # 9501 产出：WAN=eth1、LAN=eth2 lan2 lan3
   grep -q 'eth2 lan2 lan3' "$P9501" && ok "9501 产出 LAN=eth2 lan2 lan3" \
     || fail "9501 未产出预期 LAN 命名"
   grep -q '"eth1"' "$P9501" && ok "9501 产出 WAN=eth1" \
     || fail "9501 未产出预期 WAN 命名"
-  # 9601 必须与 9501 引用同一套名字（只看新增行，避免被 diff 的旧值 - 行误导）
   _new_lines "$P9601" | grep -q "list ports 'eth2'" && ok "9601 br-lan 含 eth2（与 9501 一致）" \
     || fail "9601 br-lan 未含 eth2"
   _new_lines "$P9601" | grep -qE "option ipaddr '192\.168\.2\.1'" && ok "9601 LAN 网段钉死 192.168.2.1" \
     || fail "9601 未把 LAN 网段改为 192.168.2.1"
   _new_lines "$P9601" | grep -q "option device 'eth1'" && ok "9601 WAN device = eth1（与 9501 一致）" \
     || fail "9601 WAN device 不是 eth1"
-  # 9601 新增行不得再引用改名后的失效名（出现即说明 9601 与 9501 脱钩）
   bad=0
   while IFS= read -r nm; do
     fail "9601 新增行仍引用失效旧名：option device '$nm'（9501 后已不存在）"
     bad=$((bad+1))
   done < <(_new_lines "$P9601" | grep -oE "option device '(wan|lan1)'" | sort -u)
   [[ "$bad" == 0 ]] && ok "9601 无失效的旧 device 名（wan/lan1）"
-  # 9602 LED dev 必须落在 9501 后的新名字集合里
   bad2=0
   while IFS= read -r d; do
     case "$d" in
@@ -197,25 +118,19 @@ if [[ -f "$P9501" && -f "$P9601" && -f "$P9602" ]]; then
 fi
 
 echo "== [F] 固件不含个人配置（C 类残留扫描）=="
-# 扫描范围：local/ 下所有会被打进固件的素材（rules / patches / seed）
-# 命中项即"把个人配置编进固件"的高危信号，必须人工确认后才能留。
 secret=0
-# ⚠ macOS 陷阱（第 4 次复发）：BSD grep 的 ERE **不支持 \b**（也不支持 \s，
-#   须写 [[:space:]]）。用 \b 做词锚会**静默零命中** ⇒ 检测假通过。
-#   这里改用「非 hex 字符边界」：`[^0-9a-fA-F:]` 或行首/行尾，跨平台可靠。
+# ⚠ macOS 陷阱：BSD grep 的 ERE 不支持 \b / \s（静默零命中 ⇒ 假绿）。
+#   用「非 hex 字符边界」：`[^0-9a-fA-F:]` 或行首/行尾，跨平台可靠。
 _WB='(^|[^0-9a-fA-F:])'
-# ① 疑似自定义 MAC（Gemtek OUI 00:58:28；排除纯注释里的示例）
 while IFS= read -r hit; do
   fail "疑似自定义 MAC：$hit"
   secret=$((secret+1))
 done < <(grep -rnoE "${_WB}(00:58:28:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})" \
-          "$ROOT/local" 2>/dev/null | head -5)
-# ② wifi key / 潜在明文口令
+        "$ROOT/local" 2>/dev/null | head -5)
 while IFS= read -r hit; do
   fail "疑似明文口令残留：$hit"
   secret=$((secret+1))
 done < <(grep -rnoE "option key '[^']+'" "$ROOT/local" 2>/dev/null | head -5)
-# ③ SSID 硬编码
 while IFS= read -r hit; do
   fail "疑似 SSID 硬编码：$hit"
   secret=$((secret+1))
@@ -223,20 +138,12 @@ done < <(grep -rnoE "option ssid '[^']+'" "$ROOT/local" 2>/dev/null | head -5)
 [[ "$secret" == 0 ]] && ok "local/ 内无 MAC / 口令 / SSID 等个人配置残留"
 
 echo "== [G] **git 历史**不含个人配置（push 到公开仓库前必查）=="
-# [F] 只扫工作树 ⇒ 删掉文件就"变绿"，但 blob 仍在历史里，push 后照样泄露。
-#   （2026-09-17 实证：工作树已清理，但 3e32caf/81c1082 的历史里仍有
-#    Wi-Fi 密码 / SSID / WAN MAC；[F] 却报 PASS —— 典型假绿。）
-#   这里改为扫全部历史的 diff，确保"曾经出现过"也算命中。
 if [[ ! -d "$ROOT/.git" ]]; then
   ok "（非 git 仓库，跳过）"
 else
   hist=0
-  # 只在历史 diff 里搜；用 -F 固定串，避免正则转义问题
-  # 注意：必须排除本脚本自身（scripts/audit-local.sh 末尾就含这些特征串，
-  #   否则 [G] 会"自己检自己"永远 FAIL，闸门失效）。pathspec exclude 语法。
   PAT_FILE="$(mktemp)"
-  # 检测特征串以 base64 存储：避免仓库文件本身含明文泄露值（否则 push 公开后仍暴露）。
-  #   [G] 运行时解码再比对；解码出的串不会落在被 git 跟踪的文件里。
+  # 检测特征串以 base64 存储：避免仓库文件本身含明文泄露值
   for b64 in 'MTMtMjAyLm5ldA==' 'b3B0aW9uIHNzaWQgJ1hSMTcxMEcn' 'MDA6NTg6Mjg6ZDc6OWM6N2U='; do
     printf '%s\n' "$(printf '%s' "$b64" | base64 -d)" >> "$PAT_FILE"
   done
@@ -249,8 +156,6 @@ else
     fi
   done < "$PAT_FILE"
   rm -f "$PAT_FILE"
-  # 作者身份：只盯"已知的泄露企业域"，不误杀用户正常的 GitHub noreply 邮箱。
-  #   （早期版本对非 noreply 一律报红，会把 <id>+user@users.noreply.github.com> 也误判）
   while IFS= read -r au; do
     [[ -z "$au" ]] && continue
     fail "提交作者含泄露邮箱（公开后暴露）：${au}"
@@ -264,6 +169,14 @@ else
     echo "         并在 GitHub 设置「Keep my email addresses private」" >&2
   fi
 fi
+
+echo "== [H] seed 写法铁律（F164：活动行不得带尾随注释）=="
+trail=0
+while IFS= read -r hit; do
+  fail "seed 行带尾随注释（kconfig 会截断 ⇒ 静默丢符号）：$hit"
+  trail=$((trail+1))
+done < <(grep -nE '^CONFIG_[A-Za-z0-9_]+=[ym][[:space:]]+#' "$ROOT/local/seed.local.diff" 2>/dev/null | head -5)
+[[ "$trail" == 0 ]] && ok "seed 无尾随注释"
 
 echo
 if [[ "$RED" == 1 ]]; then
