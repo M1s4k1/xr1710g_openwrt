@@ -394,12 +394,12 @@ ai-risk: low
 ai-confidence: medium
 ai-validation: 确认使用场景是否涉及 IPTV 组播（chroutes/mosdns 旁路由场景下大概率无关）；若无关可 reject
 ai-open-questions: 用户是否在本机跑 IPTV 组播接收/转发
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施。opt-in 能力、默认关闭不影响普通路径，风险低；用户确认接受（组播 GRO 能力留用）。实施时随 rebase 批次或 aggregate 快照推进吸收；v1-safe 不进（首刷保守档最小差异）
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-004
