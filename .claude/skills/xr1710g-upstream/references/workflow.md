@@ -24,7 +24,7 @@ scripts/check-upstream.sh
 git status --short
 ```
 
-记录 `config/source-lock.env` 中的完整 SHA，不只记录短 SHA。当前默认 aggregate 为 `244d433374b5a49904d6ca107f078553b37c6111`，OpenWrt 为 `7f4f824691fb2258afe9eb9a37da46d3557c4043`，Linux 为 `6.18.44`。这些值必须从文件重新读取后再报告。
+记录 `config/source-lock.env` 中的完整 SHA，不只记录短 SHA。当前基座 pin（2026-10-21 转向后）为 OpenWrt `63f702f1c0cebe2587aac10b63a02e964fc2a558`，Linux `6.18.55`；aggregate 已于同日移出仓库（移出前快照为 genshanxinli@244d433）。这些值必须从文件重新读取后再报告。
 
 ## 来源配置
 
