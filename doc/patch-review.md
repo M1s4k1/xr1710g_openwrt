@@ -269,13 +269,13 @@ ai-recommended-tier: reject
 ai-risk: low
 ai-confidence: high
 ai-validation: 与 openwrt-20261021-001/006 联动裁决即可；gilly 侧无独立信息
-ai-open-questions: 无
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: 无（轻微信息差备查：gilly mt76 bump 日期 10-07 比 openwrt 10-08 早一天，可能 pin 提交不同，无实质影响）
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 内容为 openwrt 上游派生物（bump 数值与上游一致：6.18.55 / mt76 10-07≈10-08），无独有内容；版本决策已由 openwrt 侧 001（维持 pin）/006（随 rebase 批次）承载，gilly 侧无需平行决策
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: gilly-20261021-002
