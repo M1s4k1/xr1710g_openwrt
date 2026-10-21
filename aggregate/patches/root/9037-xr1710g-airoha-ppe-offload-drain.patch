@@ -1,0 +1,162 @@
+# XR1710G 自持防御补丁（生成式外层：创建内层补丁到 openwrt 树）
+# issue #7：flow_offloading_hw 1->0->1（fw4 reload）后设备无声重启。
+# H1 根因一句话：nf_tables 销毁 hardware flowtable 时逐流 FLOW_CLS_DESTROY
+#   晚于 FLOW_BLOCK_UNBIND（cb 已摘除）而永远到不了驱动 → FOE/驱动条目残留。
+# 方案 B（本外层 → 9997）：UNBIND 摘除最后一个 cb 时立即
+#   airoha_ppe_offload_drain 清空全部 FOE（CPU 直写 SRAM 置 INVALID，
+#   无 mbox 长等待；L2/L4 双 rhashtable 摘除）。
+# 方案 A 见 9036（9996，延迟清理）——与本补丁二选一。
+# 作者：XR1710G kernel team；入库日期：2026-09-07（草案，experimental 档，待 CI 构建验证）。
+diff --git a/target/linux/airoha/patches-6.18/9997-net-airoha-ppe-offload-drain.patch b/target/linux/airoha/patches-6.18/9997-net-airoha-ppe-offload-drain.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9997-net-airoha-ppe-offload-drain.patch
+@@ -0,0 +1,148 @@
++# Source: XR1710G self-held kernel patch
++# Upstream: n/a (to be proposed once validated)
++# Reason: H1 issue #7 flow_offloading_hw 1->0->1 后整机重启的根因之一是 nf_tables 销毁
++# Reason:    hardware flowtable 时逐流 FLOW_CLS_DESTROY 晚于 FLOW_BLOCK_UNBIND（cb 已摘除）
++# Reason:    而永远到不了驱动 -> NPU/PPE 固件侧 FOE 与驱动侧条目残留；本补丁为防御方案 B：
++# Reason:    UNBIND 摘除最后一个 cb 时立即 airoha_ppe_offload_drain 清空全部 FOE
++# Reason:    （CPU 直写 SRAM 置 INVALID，无 mbox 长等待；L2/L4 双 rhashtable 摘除）。
++# Reason:    与 9996（延迟清理）二选一，勿同时应用。
++diff --git a/drivers/net/ethernet/airoha/airoha_eth.h b/drivers/net/ethernet/airoha/airoha_eth.h
++index 4c8b9760dbe1c42b31146401e9ca7a73d79cd977..61c8b9d6fb142a7aca9125ff08be8b7d93c06f54 100644
++--- a/drivers/net/ethernet/airoha/airoha_eth.h
+++++ b/drivers/net/ethernet/airoha/airoha_eth.h
++@@ -738,6 +738,7 @@
++ int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);
++ int airoha_ppe_init(struct airoha_eth *eth);
++ void airoha_ppe_deinit(struct airoha_eth *eth);
+++void airoha_ppe_offload_drain(struct airoha_eth *eth);
++ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr);
++ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe);
++ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
++diff --git a/drivers/net/ethernet/airoha/airoha_eth.c b/drivers/net/ethernet/airoha/airoha_eth.c
++index 2f2fbf4ca9b7da8fc6d4a9ca1509225bac66db2e..24c322fc814a0ca39ad6ffda8b5904a82fb5d90c 100644
++--- a/drivers/net/ethernet/airoha/airoha_eth.c
+++++ b/drivers/net/ethernet/airoha/airoha_eth.c
++@@ -3423,6 +3423,13 @@
++ 			return -ENOENT;
++ 
++ 		if (!flow_block_cb_decref(block_cb)) {
+++			/* issue #7 防御：flowtable teardown 时逐流 FLOW_CLS_DESTROY
+++			 * 晚于 UNBIND 且 cb 已从 flowtable cb_list 摘除，驱动收不到
+++			 * DESTROY → NPU/PPE 固件侧 FOE 与驱动侧条目全部残留。此处
+++			 * 立即清空本驱动全部 FOE 条目（CPU 直写 SRAM 置 INVALID，
+++			 * 无 mbox 长等待；L2/L4 双 rhashtable 同时摘除）。 */
+++			airoha_ppe_offload_drain(
+++				((struct airoha_gdm_dev *)netdev_priv(dev))->eth);
++ 			flow_block_cb_remove(block_cb, f);
++ 			list_del(&block_cb->driver_list);
++ 		}
++diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
++index 630846006775061576476496a8e4896f253afa6f..b1801d0f04a2d3d150c7a1c8f92d25c88d9ffb73 100644
++--- a/drivers/net/ethernet/airoha/airoha_ppe.c
+++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
++@@ -1320,6 +1320,105 @@
++ 	return 0;
++ }
++ 
+++/* airoha_ppe_offload_drain - flowtable teardown 后的 FOE 残留统一清理。
+++ *
+++ * 背景（issue #7）：nf_tables 销毁 hardware flowtable 时，FLOW_BLOCK_UNBIND
+++ * 在 commit 中同步执行（flow_block_cb 随即被 core 释放），而逐流的
+++ * FLOW_CLS_DESTROY 由异步 destroy_work（nf_flow_table_free）发出——落地时
+++ * 遍历的 cb_list 已空，驱动永远收不到 DESTROY，NPU/PPE 固件侧 FOE 条目与
+++ * 驱动侧 eth->flow_table 条目全部残留。
+++ *
+++ * 本函数把残留条目全部失效并释放：L2/L4 条目都挂在 eth->flow_table
+++ * （e->node）；L4 另挂 ppe->foe_flow[]（e->list），L2 另挂 ppe->l2_flows
+++ * （e->l2_node；e->l2_flows 上的子流只挂在父条目）。失效动作复用
+++ * airoha_ppe_foe_commit_entry()——本树中该路径为 CPU 直写 FOE 缓冲/SRAM
+++ * （openwrt 099-07），无 mail box、无 100s 轮询风险。
+++ *
+++ * 锁：函数内部自取 flow_offload_mutex（与 replace/destroy 互斥，调用
+++ * 来自 FLOW_BLOCK_UNBIND 路径，未持锁）；函数内持 ppe_lock（与 RX 数据面
+++ * 互斥）。
+++ * 注意：rhashtable walker 下一次迭代仍会跟随刚摘除节点保留的 ->next（
+++ * __rhashtable_remove_fast_one 不回写节点自身），故释放统一推迟到 walk
+++ * 结束之后；遍历中遇到 resize（-EAGAIN）时重建迭代器重新遍历（已摘除的
+++ * 条目不会再被遇到）。
+++ */
+++void airoha_ppe_offload_drain(struct airoha_eth *eth)
+++{
+++	struct airoha_flow_table_entry *e, *sub;
+++	struct rhashtable_iter hti;
+++	struct hlist_node *n;
+++	HLIST_HEAD(dead);
+++
+++	if (!eth->ppe)
+++		return;
+++
+++	mutex_lock(&flow_offload_mutex);
+++
+++	spin_lock_bh(&ppe_lock);
+++
+++	rhashtable_walk_enter(&eth->flow_table, &hti);
+++	rhashtable_walk_start(&hti);
+++	while (true) {
+++		e = rhashtable_walk_next(&hti);
+++		if (!e)
+++			break;
+++		if (IS_ERR(e)) {
+++			/* 表 resize：先 stop 释放 RCU 读锁，再重建迭代器从头重走
+++			 * （已摘除条目不会重遇，walk_start 会重新校验位置）。 */
+++			rhashtable_walk_stop(&hti);
+++			rhashtable_walk_exit(&hti);
+++			rhashtable_walk_enter(&eth->flow_table, &hti);
+++			rhashtable_walk_start(&hti);
+++			continue;
+++		}
+++
+++		if (e->hash != 0xffff) {
+++			e->data.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
+++			e->data.ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
+++						  AIROHA_FOE_STATE_INVALID);
+++			airoha_ppe_foe_commit_entry(eth->ppe, &e->data,
+++						    e->hash, false);
+++			e->hash = 0xffff;
+++		}
+++
+++		if (e->type == FLOW_TYPE_L2) {
+++			rhashtable_remove_fast(&eth->ppe->l2_flows, &e->l2_node,
+++					       airoha_l2_flow_table_params);
+++			hlist_for_each_entry_safe(sub, n, &e->l2_flows,
+++						  l2_subflow_node) {
+++				if (sub->hash != 0xffff) {
+++					sub->data.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
+++					sub->data.ib1 |=
+++						FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
+++							   AIROHA_FOE_STATE_INVALID);
+++					airoha_ppe_foe_commit_entry(eth->ppe,
+++								    &sub->data,
+++								    sub->hash,
+++								    false);
+++					sub->hash = 0xffff;
+++				}
+++				hlist_del_init(&sub->l2_subflow_node);
+++				hlist_add_head(&sub->l2_subflow_node, &dead);
+++			}
+++		} else {
+++			hlist_del_init(&e->list);
+++		}
+++		rhashtable_remove_fast(&eth->flow_table, &e->node,
+++				       airoha_flow_table_params);
+++		/* 用 l2_subflow_node 链入待释放链表：L4/L2 父条目该成员空闲 */
+++		hlist_add_head(&e->l2_subflow_node, &dead);
+++	}
+++	rhashtable_walk_stop(&hti);
+++	rhashtable_walk_exit(&hti);
+++
+++	hlist_for_each_entry_safe(e, n, &dead, l2_subflow_node)
+++		kfree(e);
+++
+++	spin_unlock_bh(&ppe_lock);
+++
+++	mutex_unlock(&flow_offload_mutex);
+++}
+++
++ void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
++ 				    struct airoha_foe_stats64 *stats)
++ {

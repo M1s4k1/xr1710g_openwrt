@@ -1,0 +1,57 @@
+#!/bin/sh
+# XR1710G: 802.11r 的 FT-over-DS 出厂/迁移配置（2026-09-13 P2 §2.8，F144）。
+#
+# 为什么（根因链，来源 orangeyoo v1.6.1 + 恩山 tid-8484444，本仓此前完全缺失 802.11r）：
+#   出厂 5GHz 若只开 802.11r 而 `ft_over_ds='0'`（Over-the-Air FT），**Apple 客户端惯用
+#   FT-over-DS**（走上联分发系统）→ 每次漫游退回全量 SAE 认证，实机日志实测 **66 次**
+#   `did not acknowledge authentication response` 全部来自同一台 iPhone；置 `ft_over_ds='1'`
+#   后消失。本仓 `grep -rln "ft_over_ds\|ieee80211r\|mobility_domain"` 此前为空。
+#
+# 口径：
+#   a) 只处理**本仓出厂 wifi-iface 名**（default_radio0/1/1_5g/2）且当前为 `mode='ap'` 的段——
+#      用户自建 iface（guest/iot/mesh…）一律不碰。段不存在则跳过。
+#   b) 每个 option 各自幂等：已是目标值 → 不写、不 commit；全部已就绪 → 直接 exit 0（零写入）。
+#   c) 只设三项：`ieee80211r='1'`、`mobility_domain='6616'`（恩山社区默认）、`ft_over_ds='1'`。
+#      **密钥/SSID/信道/加密/其它任何 option 都不动**。若用户已显式设过 mobility_domain，保留其值。
+#   d) 板型仅 `gemtek,xr1710g-ubi`（orangeyoo 原脚本判 `econet,xr1710g-ubi`，本仓板名不同）。
+#   e) 不 reload：wireless 由正常启动流程在 uci-defaults 之后拉起（与本仓其它 98-* 一致）。
+#   f) 失败一律 exit 0 —— uci-defaults 红脸会阻断 /etc/init.d/boot 后续脚本。
+#   g) 回退：`uci set wireless.<iface>.ieee80211r='0'`（或 `ft_over_ds='0'`）+ `uci commit wireless`
+#      + `wifi reload`；本脚本不会再改回（幂等只在"值未就绪时"写）。
+#
+# ⚠ 注：本仓 `files/` overlay **不分档位**（F141 实证两档镜像都投递），故本项对 stock/experimental
+#   同时生效。判据（实机，见 docs/FIXES.md F144）：
+#     ① 双频/双 AP 下 Apple 客户端漫游时 `logread` 无 `did not acknowledge authentication response`；
+#     ② `iw station dump` 的 `connected time` 连续、无重认证；漫游延迟显著下降；
+#     ③ 非 FT 客户端、PMF、WPA2/WPA3 混合（sae-mixed）均可正常关联；
+#     ④ 关闭 802.11r 后行为回到改动前（可回退）。
+board="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ -n "$board" ] || board="$(board_name 2>/dev/null)"
+[ "$board" = 'gemtek,xr1710g-ubi' ] || exit 0
+
+changed=0
+for iface in default_radio0 default_radio1 default_radio1_5g default_radio2; do
+	# 段不存在（用户删过/换过名）→ 跳过
+	[ -n "$(uci -q get "wireless.$iface" 2>/dev/null)" ] || continue
+	[ "$(uci -q get "wireless.$iface.mode" 2>/dev/null)" = 'ap' ] || continue
+
+	# 802.11r 本体
+	if [ "$(uci -q get "wireless.$iface.ieee80211r" 2>/dev/null)" != '1' ]; then
+		uci -q set "wireless.$iface.ieee80211r='1'" || exit 0
+		changed=1
+	fi
+	# Mobility Domain（用户设过就保留）
+	if [ -z "$(uci -q get "wireless.$iface.mobility_domain" 2>/dev/null)" ]; then
+		uci -q set "wireless.$iface.mobility_domain='6616'" || exit 0
+		changed=1
+	fi
+	# FT-over-DS（本次要修的就是它）
+	if [ "$(uci -q get "wireless.$iface.ft_over_ds" 2>/dev/null)" != '1' ]; then
+		uci -q set "wireless.$iface.ft_over_ds='1'" || exit 0
+		changed=1
+	fi
+done
+[ "$changed" = '1' ] || exit 0
+uci -q commit wireless || exit 0
+logger -t xr1710g-ft-over-ds "enabled 802.11r + FT-over-DS (mobility_domain 6616) on factory AP ifaces"
+exit 0

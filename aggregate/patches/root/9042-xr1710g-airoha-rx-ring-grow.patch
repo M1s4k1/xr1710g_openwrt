@@ -1,0 +1,185 @@
+# Source: openwrt/openwrt PR #24872 "airoha: grow the small RX rings"（Vitaliy Sochnev，2026-09-10，
+#   backport 自 kernel 7.4 队列提交 e84b89f17a12，Acked-by Lorenzo Bianconi）
+#   https://github.com/openwrt/openwrt/pull/24872
+# Upstream: open（#24872，mergeable_state=blocked）；合入后删除本层补丁，改 FIXES 状态
+# Reason: ring 4 = 共享 "force to CPU" 环，airoha_fe_vip_setup() 把 BOOTP、PPPoE Discovery、
+#   PPP LCP/IPCP/CHAP/PAP/IPv6CP、ISAKMP、DHCPv6、SIP、LLDP 全导到它（两个 CDM 的
+#   CDM_VIP_QSEL_MASK 都 =4）。16 描述符只占 4096B page 的 512B，硬件跑到环尾不在边界停下，
+#   page 尾部是 32B 周期的"描述符形状"数据 → 硬件跑过已投递描述符、在非环内 slot 找不到
+#   buffer，标 DROP 但仍写描述符结构 → 越过 page 就写进内核内存。后果：DHCP/PPPoE 握手期
+#   内核 panic（实测垃圾指针落在 cpufreq dbs_irq_work / scheduler / nf_conntrack 上，5 次），
+#   或 PPPoE 协商永不完成（REG_RX_DMA_IDX 前进而 REG_RX_CPU_IDX 卡在 15）。
+#   修法：RX_DSCP_NUM() fallback 16 → 32（vendor SDK 默认，实测 16↔32 之间是硬件边界），
+#   ring 4 → 128（与 ring 2/11/15 一致）。代价 1088 个额外描述符（约 2.1MiB RX buffer +
+#   34KiB coherent desc）。作者明确否定了 SoC 限定：ring 4 与 VIP 分类是全驱动共享，无 DT/
+#   硬件属性区分 → **对 AN7581 同样适用**。
+# 与本地关系：本仓 9001（板级 dts）/9025（no-carrier rx stats）/9038（PCS 校准）/9041（SerDes）
+#   均不触碰 airoha_eth.h 的 RX_DSCP_NUM 宏 → 零冲突（已核对文件与 hunk 区）；
+#   本补丁的 916-02 机械头同步会改变 vendor/fanboy/11（LRO）的 916-02 基线，MANIFEST 中
+#   9042 置于 vendor/11 **之前**应用（本补丁同时把 916-02 内层上下文 16→32 同步好，
+#   vendor/11 的 @@ -553,8 段在 9042 之后仍可应用——见应用顺序验证记录）。
+# 验证：对 openwrt main 3de9bf7 树真实应用通过（git apply）；本补丁新增的内层
+#   182-v7.4-net-airoha-grow-the-small-RX-rings.patch 逐字节等同上游 PR。
+From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Subject: [PATCH] airoha: grow the small RX rings
+
+Raise the RX_DSCP_NUM() fallback from 16 to 32, the vendor SDK default,
+and give ring 4 the 128 descriptors already used for rings 2/11/15.
+
+Ring 4 is the shared "force to CPU" ring that airoha_fe_vip_setup()
+routes BOOTP, PPPoE Discovery, PPP LCP/IPCP/CHAP/PAP/IPv6CP, ISAKMP,
+DHCPv6, SIP and LLDP onto, so it sees the same bursty non-hashed traffic
+as the rings already on 128 while sitting on the smallest allowance.
+Both CDMs forward to it: REG_CDM_FWD_CFG(1) and (2) each set
+CDM_VIP_QSEL_MASK to 4.
+
+Ring 4 and the VIP classification feeding it are shared driver-wide, with
+no DT or hardware property distinguishing one variant's ring 4 from
+another's, so this is not scoped to a particular SoC.
+
+Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+---
+diff --git a/target/linux/airoha/patches-6.18/182-v7.4-net-airoha-grow-the-small-RX-rings.patch b/target/linux/airoha/patches-6.18/182-v7.4-net-airoha-grow-the-small-RX-rings.patch
+new file mode 100644
+index 00000000000000..3a21a65022acab
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/182-v7.4-net-airoha-grow-the-small-RX-rings.patch
+@@ -0,0 +1,56 @@
++From e84b89f17a12a7cfc526eb1c18ac02e8777e18c9 Mon Sep 17 00:00:00 2001
++From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
++Date: Tue, 1 Sep 2026 19:32:54 +0100
++Subject: [PATCH] net: airoha: grow the small RX rings
++
++Raise the RX_DSCP_NUM() fallback from 16 to 32, the vendor SDK default,
++and give ring 4 the 128 descriptors already used for rings 2/11/15.
++
++Ring 4 is the shared "force to CPU" ring that airoha_fe_vip_setup()
++routes BOOTP, PPPoE Discovery, PPP LCP/IPCP/CHAP/PAP/IPv6CP, ISAKMP,
++DHCPv6, SIP and LLDP onto, so it sees the same bursty non-hashed traffic
++as the rings already on 128 while sitting on the smallest allowance.
++Both CDMs forward to it: REG_CDM_FWD_CFG(1) and (2) each set
++CDM_VIP_QSEL_MASK to 4.
++
++The NO_CPU_DSCP fix does not cover this. With it in place, at 16
++descriptors the ring still dies during PPPoE negotiation on a Nokia
++XG-040G-MF: over 6455 devmem samples in 60 s, REG_RX_DMA_IDX advanced
++0x2c -> 0x52 while REG_RX_CPU_IDX stayed at 15, descriptor 15 had DONE
++set on a 60-byte frame, descriptors 0-14 were empty, and q->tail was 0.
++Hw had completed a descriptor the strictly sequential consumer in
++airoha_qdma_rx_process() cannot reach, and negotiation never completes.
++At 16 DHCP still works while PPPoE does not: a dial-up bursts Discovery,
++LCP, IPCP and CHAP where DHCP sends one packet every ~150 s. With this
++series, 508 forced reconnects over 20 h saw no recurrence.
++
++RX_DONE_INT_MASK covers all 32 rings on both QDMA instances, so this
++costs 544 more descriptors per instance, 1088 in total: 2.1 MiB of RX
++buffers at PAGE_SIZE/2 each, plus 34 KiB of coherent descriptor memory.
++
++Ring 4 and the VIP classification feeding it are shared driver-wide, with
++no DT or hardware property distinguishing one variant's ring 4 from
++another's, so this is not scoped to a particular SoC.
++
++Acked-by: Lorenzo Bianconi <lorenzo@kernel.org>
++Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
++Link: https://patch.msgid.link/978fe95e4c5ddb05ceb7d8c4d00ea2d2203b79d0.1788286284.git.sochnev.v.74@gmail.com
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/ethernet/airoha/airoha_eth.h | 3 ++-
++ 1 file changed, 2 insertions(+), 1 deletion(-)
++
++--- a/drivers/net/ethernet/airoha/airoha_eth.h
+++++ b/drivers/net/ethernet/airoha/airoha_eth.h
++@@ -40,9 +40,10 @@
++ #define TX_DSCP_NUM			1024
++ #define RX_DSCP_NUM(_n)			\
++ 	((_n) ==  2 ? 128 :		\
+++	 (_n) ==  4 ? 128 :		\
++ 	 (_n) == 11 ? 128 :		\
++ 	 (_n) == 15 ? 128 :		\
++-	 (_n) ==  0 ? 1024 : 16)
+++	 (_n) ==  0 ? 1024 : 32)
++ 
++ #define PSE_RSV_PAGES			128
++ #define PSE_QUEUE_RSV_PAGES		64
+diff --git a/target/linux/airoha/patches-6.18/310-10-net-airoha-add-phylink-support.patch b/target/linux/airoha/patches-6.18/310-10-net-airoha-add-phylink-support.patch
+index cd42ae2d8a58de..9e974be472915b 100644
+--- a/target/linux/airoha/patches-6.18/310-10-net-airoha-add-phylink-support.patch
++++ b/target/linux/airoha/patches-6.18/310-10-net-airoha-add-phylink-support.patch
+@@ -317,7 +317,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+  		airoha_metadata_dst_free(port);
+ --- a/drivers/net/ethernet/airoha/airoha_eth.h
+ +++ b/drivers/net/ethernet/airoha/airoha_eth.h
+-@@ -554,6 +554,9 @@ struct airoha_gdm_dev {
++@@ -555,6 +555,9 @@ struct airoha_gdm_dev {
+  	int nbq;
+  
+  	struct airoha_hw_stats stats;
+@@ -327,7 +327,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+  };
+  
+  struct airoha_gdm_port {
+-@@ -561,8 +564,8 @@ struct airoha_gdm_port {
++@@ -562,8 +565,8 @@ struct airoha_gdm_port {
+  	int id;
+  	int users;
+  
+diff --git a/target/linux/airoha/patches-6.18/916-02-net-airoha-Implement-HW-GRO-TCP-support.patch b/target/linux/airoha/patches-6.18/916-02-net-airoha-Implement-HW-GRO-TCP-support.patch
+index 513760318d0262..23106a52e61241 100644
+--- a/target/linux/airoha/patches-6.18/916-02-net-airoha-Implement-HW-GRO-TCP-support.patch
++++ b/target/linux/airoha/patches-6.18/916-02-net-airoha-Implement-HW-GRO-TCP-support.patch
+@@ -561,9 +561,9 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+  	/* reserve hw queues for HTB offloading */
+ --- a/drivers/net/ethernet/airoha/airoha_eth.h
+ +++ b/drivers/net/ethernet/airoha/airoha_eth.h
+-@@ -44,6 +44,18 @@
++@@ -45,6 +45,18 @@
+  	 (_n) == 15 ? 128 :		\
+- 	 (_n) ==  0 ? 1024 : 16)
++ 	 (_n) ==  0 ? 1024 : 32)
+  
+ +#define AIROHA_LRO_PAGE_ORDER		order_base_2(SZ_16K / PAGE_SIZE)
+ +#define AIROHA_MAX_NUM_LRO_QUEUES	8
+@@ -580,7 +580,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+  #define PSE_RSV_PAGES			128
+  #define PSE_QUEUE_RSV_PAGES		64
+  
+-@@ -676,6 +688,18 @@ static inline bool airoha_is_7583(struct
++@@ -677,6 +689,18 @@ static inline bool airoha_is_7583(struct
+  	return eth->soc->version == 0x7583;
+  }
+  
+diff --git a/target/linux/airoha/patches-6.18/920-12-net-airoha-defer-GDM3-GDM4-WAN-mode-and-GDM2-loopbac.patch b/target/linux/airoha/patches-6.18/920-12-net-airoha-defer-GDM3-GDM4-WAN-mode-and-GDM2-loopbac.patch
+index 847f78836ccb78..d0f1280462aea0 100644
+--- a/target/linux/airoha/patches-6.18/920-12-net-airoha-defer-GDM3-GDM4-WAN-mode-and-GDM2-loopbac.patch
++++ b/target/linux/airoha/patches-6.18/920-12-net-airoha-defer-GDM3-GDM4-WAN-mode-and-GDM2-loopbac.patch
+@@ -599,7 +599,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+  
+ --- a/drivers/net/ethernet/airoha/airoha_eth.h
+ +++ b/drivers/net/ethernet/airoha/airoha_eth.h
+-@@ -550,11 +550,12 @@ struct airoha_qdma {
++@@ -551,11 +551,12 @@ struct airoha_qdma {
+  
+  enum airoha_priv_flags {
+  	AIROHA_PRIV_F_WAN = BIT(0),
+@@ -613,7 +613,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+  	struct airoha_eth *eth;
+  
+  	DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
+-@@ -704,6 +705,16 @@ int airoha_get_fe_port(struct airoha_gdm
++@@ -705,6 +706,16 @@ int airoha_get_fe_port(struct airoha_gdm
+  bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
+  			     struct airoha_gdm_dev *dev);
+  
+diff --git a/target/linux/airoha/patches-6.18/920-13-net-airoha-Rework-MTU-configuration.patch b/target/linux/airoha/patches-6.18/920-13-net-airoha-Rework-MTU-configuration.patch
+index 509d8cfa5856d5..796547ba79a170 100644
+--- a/target/linux/airoha/patches-6.18/920-13-net-airoha-Rework-MTU-configuration.patch
++++ b/target/linux/airoha/patches-6.18/920-13-net-airoha-Rework-MTU-configuration.patch
+@@ -169,7 +169,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+  #define AIROHA_MAX_PACKET_SIZE		2048
+  #define AIROHA_NUM_QOS_CHANNELS		4
+  #define AIROHA_NUM_QOS_QUEUES		8
+-@@ -715,6 +716,7 @@ airoha_qdma_deref(struct airoha_gdm_dev
++@@ -716,6 +717,7 @@ airoha_qdma_deref(struct airoha_gdm_dev
+  					 lockdep_is_held(&flow_offload_mutex));
+  }
+  

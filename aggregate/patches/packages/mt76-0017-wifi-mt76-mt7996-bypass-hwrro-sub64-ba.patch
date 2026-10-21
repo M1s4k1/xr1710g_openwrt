@@ -1,0 +1,21 @@
+From: Tao Gong <gongtao0607@gmail.com>
+Subject: [PATCH] wifi: mt76: mt7996: bypass HW_RRO for sub-64 window BlockAck sessions
+#EXP/0017 —— G038 批次（2026-09-12 P2 吸收，来源 Gilly 032）：
+  Apple macOS/iOS 站点在延迟敏感 TID（如 TID6 buf_size=8、TID1 buf_size=16）协商**亚 64 窗口**
+  BlockAck，与标准 64/256 窗口的批量队列并存。MT7996 的 HW_RRO 引擎按 64 帧最小窗口设计 →
+  亚 64 窗口下片上重排环与 SRAM 会话查找状态机进入非法态，导致复用该 WCID 的后续关联硬件 RX
+  卸载停摆。改为 buf_size < 64 时旁路 HW_RRO（交回 mac80211 软件重排），>= 64 仍走硬件。
+实机判据：Apple 站点断连重连后 RX 卸载不停摆；`ba_rdd_rro` 对亚 64 会话为 0。
+
+--- a/mt7996/mcu.c
++++ b/mt7996/mcu.c
+@@ -1752,7 +1752,8 @@ mt7996_mcu_sta_ba(struct mt7996_dev *dev
+ 	ba->ba_en = enable << params->tid;
+ 	ba->amsdu = params->amsdu;
+ 	ba->tid = params->tid;
+-	ba->ba_rdd_rro = !tx && enable && mt7996_has_hwrro(dev);
++	ba->ba_rdd_rro = !tx && enable && mt7996_has_hwrro(dev) &&
++			 params->buf_size >= 64;
+ 
+ 	return mt76_mcu_skb_send_msg(&dev->mt76, skb,
+ 				     MCU_WMWA_UNI_CMD(STA_REC_UPDATE), true);

@@ -1,0 +1,144 @@
+# Source: YYH2913/openwrt mt76/0161（Yanghan Ye, 2026-08-18）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a（`Fixes: 332bbe9b2784`，即上游被 revert 的那个 commit 的**正确版本**）
+# Reason: mt76_dma_init() 因 WED RRO 队列不走 NAPI 而跳过它们，但 mt7996_dma_rro_start()
+#   在 WED 未激活时会为这些队列注册 NAPI；清理侧只看 WED RRO 标志 → 这些 NAPI 实例被留在
+#   free_netdev() 里触发告警。修法：struct mt76_dev 加 napi_registered bitmap；
+#   mt76_dma_rx_queue_init() 在 netif_napi_add() 后 set_bit；mt76_dma_cleanup() 改为遍历
+#   全量 q_rx，按 bitmap 做 napi_disable → rx_cleanup → page_pool_destroy/置 NULL →
+#   netif_napi_del + clear_bit；NPU 侧（mt76_npu_rx_queue_init/rx_queues_deinit）同用该 bitmap，
+#   **不再引入 q->npu_napi_registered**。
+# **重基（F126）**：上游已 Revert "Disable napi when removing device"（6d1c6a75）并把
+#   mt76_dma_cleanup() 改成 mt76_for_each_q_rx + 无条件 netif_napi_del——0161 的 dma.c hunk#2
+#   基线是 revert 之前，故按上游新形态重写（保留"只对 test_bit(i) 为真的队列做 netif_napi_del"，
+#   这正是 revert 所要求的：从未 netif_napi_add 的队列 bit 必为 0，天然安全）。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序按序 fuzz=0（dma.c hunk#2 为重写版）。
+diff --git a/dma.c b/dma.c
+index 22f71187..5f67d042 100644
+--- a/dma.c
++++ b/dma.c
+@@ -1189,8 +1189,11 @@ static void
+ mt76_dma_rx_queue_init(struct mt76_dev *dev, enum mt76_rxq_id qid,
+ 		       int (*poll)(struct napi_struct *napi, int budget))
+ {
++	struct mt76_queue *q = &dev->q_rx[qid];
++
+ 	netif_napi_add(dev->napi_dev, &dev->napi[qid], poll);
+-	mt76_dma_rx_fill_buf(dev, &dev->q_rx[qid], false);
++	set_bit(qid, &dev->napi_registered);
++	mt76_dma_rx_fill_buf(dev, q, false);
+ 	napi_enable(&dev->napi[qid]);
+ }
+ 
+@@ -1276,13 +1279,24 @@ void mt76_dma_cleanup(struct mt76_dev *dev)
+ 	for (i = 0; i < ARRAY_SIZE(dev->q_mcu); i++)
+ 		mt76_dma_tx_cleanup(dev, dev->q_mcu[i], true);
+ 
+-	mt76_for_each_q_rx(dev, i) {
++	for (i = 0; i < ARRAY_SIZE(dev->q_rx); i++) {
+ 		struct mt76_queue *q = &dev->q_rx[i];
++		bool napi_registered = test_bit(i, &dev->napi_registered);
+ 
+-		netif_napi_del(&dev->napi[i]);
+-		mt76_dma_rx_cleanup(dev, q);
++		if (napi_registered)
++			napi_disable(&dev->napi[i]);
++		if (q->ndesc)
++			mt76_dma_rx_cleanup(dev, q);
+ 
+-		page_pool_destroy(q->page_pool);
++		if (q->page_pool) {
++			page_pool_destroy(q->page_pool);
++			q->page_pool = NULL;
++		}
++
++		if (napi_registered) {
++			netif_napi_del(&dev->napi[i]);
++			clear_bit(i, &dev->napi_registered);
++		}
+ 	}
+ 
+ 	if (mtk_wed_device_active(&dev->mmio.wed))
+diff --git a/mt76.h b/mt76.h
+index b4f22560..c339bce2 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -260,7 +260,6 @@ struct mt76_queue {
+ 	int npu_irq;
+ 	bool stopped;
+ 	bool blocked;
+-	bool npu_napi_registered;
+ 	bool npu_irq_registered;
+ 
+ 	u8 buf_offset;
+@@ -966,6 +965,7 @@ struct mt76_dev {
+ 	struct net_device *tx_napi_dev;
+ 	spinlock_t rx_lock;
+ 	struct napi_struct napi[__MT_RXQ_MAX];
++	unsigned long napi_registered;
+ 	struct sk_buff_head rx_skb[__MT_RXQ_MAX];
+ 	struct tasklet_struct irq_tasklet;
+ 
+diff --git a/npu.c b/npu.c
+index d3b1082c..9795ec75 100644
+--- a/npu.c
++++ b/npu.c
+@@ -337,7 +337,7 @@ int mt76_npu_rx_queue_init(struct mt76_dev *dev, struct mt76_queue *q)
+ 	}
+ 
+ 	netif_napi_add(dev->napi_dev, &dev->napi[qid], mt76_npu_rx_poll);
+-	WRITE_ONCE(q->npu_napi_registered, true);
++	set_bit(qid, &dev->napi_registered);
+ 	mt76_npu_fill_rx_queue(dev, q);
+ 	napi_enable(&dev->napi[qid]);
+ 
+@@ -354,16 +354,17 @@ int mt76_npu_rx_queue_init(struct mt76_dev *dev, struct mt76_queue *q)
+ 	goto out;
+ 
+ error_queue:
+-	if (READ_ONCE(q->npu_napi_registered)) {
++	if (test_bit(qid, &dev->napi_registered))
+ 		napi_disable(&dev->napi[qid]);
+-		netif_napi_del(&dev->napi[qid]);
+-		WRITE_ONCE(q->npu_napi_registered, false);
+-	}
+ 	if (q->page_pool) {
+ 		mt76_npu_queue_cleanup(dev, q);
+ 		page_pool_destroy(q->page_pool);
+ 		q->page_pool = NULL;
+ 	}
++	if (test_bit(qid, &dev->napi_registered)) {
++		netif_napi_del(&dev->napi[qid]);
++		clear_bit(qid, &dev->napi_registered);
++	}
+ 	q->npu_irq = -1;
+ 	q->ndesc = 0;
+ out:
+@@ -389,7 +390,7 @@ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev)
+ 		u32 status;
+ 
+ 		irq_registered = READ_ONCE(q->npu_irq_registered);
+-		napi_registered = READ_ONCE(q->npu_napi_registered);
++		napi_registered = test_bit(i, &dev->napi_registered);
+ 		if (irq_registered) {
+ 			WRITE_ONCE(q->npu_irq_registered, false);
+ 			if (npu) {
+@@ -404,8 +405,6 @@ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev)
+ 
+ 		if (napi_registered) {
+ 			napi_disable(&dev->napi[i]);
+-			netif_napi_del(&dev->napi[i]);
+-			WRITE_ONCE(q->npu_napi_registered, false);
+ 		}
+ 
+ 		/* A poll already completing can race the first IRQ mask. */
+@@ -420,6 +419,10 @@ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev)
+ 			page_pool_destroy(q->page_pool);
+ 			q->page_pool = NULL;
+ 		}
++		if (napi_registered) {
++			netif_napi_del(&dev->napi[i]);
++			clear_bit(i, &dev->napi_registered);
++		}
+ 		q->ndesc = 0;
+ 	}
+ 	mutex_unlock(&dev->mutex);

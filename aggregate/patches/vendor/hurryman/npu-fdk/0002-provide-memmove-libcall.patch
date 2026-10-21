@@ -1,0 +1,31 @@
+From edc4fcf4b3da3e546a5d2a39e125b66f009df75f Mon Sep 17 00:00:00 2001
+From: xr1710g-openwrt build fix <noreply@xr1710g>
+Date: Sun, 30 Aug 2026 01:18:46 +0000
+Subject: [PATCH 2/2] Provide memmove libcall wrapper for clang -Oz LTO builds
+
+Origin: https://github.com/hurryman2212/airoha-npu-fdk @ 2d13e291ab511b6b319dc5073f47e26cac958ae4
+License: MIT
+Fix: clang -Oz -flto lowers a struct copy in wifi_mt7996_ppe_result_bundle.c
+     to a memmove libcall. The FDK already ships memset/memcpy wrappers and
+     npu_memmove; add the missing memmove wrapper for link success.
+
+---
+ src/an7581/runtime/memory.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/an7581/runtime/memory.c b/src/an7581/runtime/memory.c
+index 6e7c72f..9c12ebb 100644
+--- a/src/an7581/runtime/memory.c
++++ b/src/an7581/runtime/memory.c
+@@ -46,4 +46,8 @@ void *memset(void *destination, int value, size_t length) {
+ void *memcpy(void *destination, const void *source, size_t length) {
+   return npu_memcpy(destination, source, length);
+ }
++
++void *memmove(void *destination, const void *source, size_t length) {
++  return npu_memmove(destination, source, length);
++}
+ #endif
+-- 
+2.39.5
+

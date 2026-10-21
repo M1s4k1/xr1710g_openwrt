@@ -7,8 +7,7 @@
 
 ### 2.1 先准备 OpenWrt 源码树（只需一次）
 
-本仓库与上游 `xr1710g-openwrt` 都只是**叠加层**（补丁 + 配置），**不是源码树** ——
-它们不含 `package/`、`target/`、`scripts/feeds`。构建必须有一棵真正的 openwrt 源码树：
+本仓库内置 aggregate 补丁层，同时仍不是 OpenWrt 源码树。构建必须有一棵真正的 OpenWrt 源码树：
 
 ```bash
 git clone https://github.com/openwrt/openwrt.git <路径>/openwrt
@@ -21,10 +20,10 @@ cd <路径>/openwrt && git log -1 --date=short   # 建议接近补丁快照日�
 ### 2.2 构建
 
 ```bash
-# 建议首次刷机走保守档（不提档实验补丁，最小差异，63 条活动）
+# 建议首次刷机走保守档（不提档实验补丁，最小差异，64 条活动）
 scripts/build-mine.sh v1-safe --tree <源码树路径>
 
-# 正式档（func 选择集，103 条活动补丁）
+# 正式档（func 选择集，104 条活动补丁）
 scripts/build-mine.sh stock --tree <源码树路径>
 
 # 只合成 .stage/ 不构建（调试 rules 用）
@@ -50,7 +49,7 @@ scripts/build-mine.sh stock --disable-oc 0
 
 | 步 | 动作 | 说明 |
 |----|------|------|
-| 0 | reset / rsync 上游 → `.stage/` | 上游版本 `1fea1e5` |
+| 0 | reset / rsync 内置 aggregate → `.stage/` | 快照 `244d433` |
 | 1 | apply-patches | 叠加 `patches/` 到构建树 |
 | 2 | prepare-oc | **本仓库用 sed 改写为 no-op**（DISABLE_OC=1 时） |
 | 3 | feeds | 更新软件源 |
@@ -63,8 +62,7 @@ scripts/build-mine.sh stock --disable-oc 0
 
 ## 7. 版本锁定
 
-- 上游基线：`1fea1e5`（ci-172）
-- 已裁决至：`244d433`（2026-09-17，见 `../upstream-decisions.md`）
+- 内置 aggregate 快照：`244d433`（来源历史见 `config/source-lock.env`）
 - YYH 参考：tag `xr1710g_260831`，SNAPSHOT r2363-e88fbe28ea，kernel 6.18.44，**apk** 系
 - 本产物：**opkg** 系（func 上游）
 
@@ -96,18 +94,16 @@ gh workflow run build.yml -f profile=stock
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `profile` | `stock` | **stock = func 正式档（103 活动）**；`v1-safe` = 保守档（63 活动） |
-| `openwrt_ref` | `7f4f824691…` | OpenWrt 源码树 ref（对齐 Linux 6.18.44 基线） |
-| `upstream_ref` | `1fea1e59…` | 上游叠加层 ref |
+| `profile` | `stock` | **stock = func 正式档（104 活动）**；`v1-safe` = 保守档（64 活动） |
+| `openwrt_ref` | `7f4f824691…` | OpenWrt 源码树 ref |
 
 ### 为什么 pin 两个 ref
 
-默认锁到 **Linux 6.18.44 基线**（OpenWrt `7f4f824691` + 上游 `1fea1e59`），对齐上游 `audit-upstream-watch.sh` 的 `BASELINE_UPSTREAM`，保证可复现。
-取最新 `main` 会因内核版本升级（≥6.18.52）导致补丁 reject 阻断编译。需要跟进上游时**显式改 input**，别默认跟随。
+默认锁到 **Linux 6.18.44 基线**（OpenWrt `7f4f824691` + 内置 aggregate `244d433`），保证输入可复现。aggregate 不会自动更新；需要更新时必须人工替换并重新审计。
 
 ### CI 流程
 
-取出本仓库 → clone 上游叠加层 + OpenWrt 源码树 → `stage.sh` 合成 `.stage/`
+取出本仓库 → 使用内置 aggregate + OpenWrt 源码树 → `stage.sh` 合成 `.stage/`
 → rsync 进源码树 → `apply-patches.sh` → feeds → defconfig+seed(+ccache) → make
 → 上传 `firmware-<profile>` 与 `buildlog-<profile>`。
 

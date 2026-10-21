@@ -1,0 +1,20 @@
+# Source: YYH2913/openwrt mt76/0010（MTK，2026-07；YYH 编号 0010 与本仓 mt76-0010 冲突，
+#   故按本仓空号 0018 命名）—— 2026-09-12 P3-C 吸收，#EXP
+# Upstream: n/a（作者自持/MTK 内部树；上游 be5ce791 尚未含此改动）
+# Reason: mt7996_mac_sta_init_link() 里紧接 wtbl ADM_COUNT_CLEAR 之后发
+#   mt7996_mcu_add_sta(..., CONN_STATE_DISCONNECT, true)——带 disconnect 状态的 sta_rec_basic
+#   会让固件 DL OFDMA 算法失败（STA 重连后 DL OFDMA 不工作）。删除该调用（2 行）。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序 fuzz=0。
+diff --git a/mt7996/main.c b/mt7996/main.c
+index d13166a6..cbd918ee 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -1245,8 +1245,6 @@ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
+ 	rcu_assign_pointer(msta->link[link_id], msta_link);
+ 
+ 	mt7996_mac_wtbl_update(dev, idx, MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
+-	mt7996_mcu_add_sta(dev, link_conf, link_sta, link, msta_link,
+-			   CONN_STATE_DISCONNECT, true);
+ 
+ 	rcu_assign_pointer(dev->mt76.wcid[idx], &msta_link->wcid);
+ 	mt76_wcid_init(&msta_link->wcid, phy->mt76->band_idx);

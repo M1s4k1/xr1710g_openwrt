@@ -1,0 +1,149 @@
+From e15a73291be36427a7fd71b5003c055dd464626e Mon Sep 17 00:00:00 2001
+From: xr1710g-openwrt build fix <noreply@xr1710g>
+Date: Sun, 30 Aug 2026 01:18:41 +0000
+Subject: [PATCH 1/2] Fix volatile const void casts for
+ __builtin_assume_aligned
+
+Origin: https://github.com/hurryman2212/airoha-npu-fdk @ 2d13e291ab511b6b319dc5073f47e26cac958ae4
+License: MIT
+Fix: __builtin_assume_aligned expects const void*; clang 17+ rejects passing
+     volatile uint8_t*/volatile void* with -Werror. Wrap each first argument
+     in an explicit (const void *) cast.
+
+---
+ src/an7581/services/wifi/mt7996_fragment_queue_consumer.c | 6 ++----
+ src/an7581/services/wifi/mt7996_packet_control.c          | 6 ++----
+ src/an7581/services/wifi/mt7996_packet_queue_consumer.c   | 3 +--
+ src/an7581/services/wifi/mt7996_tx_done.c                 | 8 +++-----
+ src/an7581/services/wifi/rro_packet_backend.c             | 5 ++---
+ src/an7581/services/wifi/rro_page_backend.c               | 6 +++---
+ src/an7581/services/wifi/tx_packet_slow_path.c            | 3 +--
+ 7 files changed, 14 insertions(+), 23 deletions(-)
+
+diff --git a/src/an7581/services/wifi/mt7996_fragment_queue_consumer.c b/src/an7581/services/wifi/mt7996_fragment_queue_consumer.c
+index 2c916f2..3e7b376 100644
+--- a/src/an7581/services/wifi/mt7996_fragment_queue_consumer.c
++++ b/src/an7581/services/wifi/mt7996_fragment_queue_consumer.c
+@@ -204,10 +204,8 @@ static enum npu_runtime_result forward_fragment(
+   uint32_t attempt;
+   uint16_t packet_id = (uint16_t)entry->packet_id;
+ 
+-  packet_words = __builtin_assume_aligned(
+-      consumer->packet_cached_memory +
+-          (uint32_t)packet_id * NPU_WIFI_MT7996_PACKET_QUEUE_PACKET_SIZE,
+-      sizeof(uint32_t));
++  packet_words = __builtin_assume_aligned((const void *)(consumer->packet_cached_memory +
++          (uint32_t)packet_id * NPU_WIFI_MT7996_PACKET_QUEUE_PACKET_SIZE), sizeof(uint32_t));
+   delivery = (struct npu_wifi_mt7996_packet_delivery){
+       .source_device_address = packet_device_address(consumer, packet_id),
+       .packet_word = *packet_words,
+diff --git a/src/an7581/services/wifi/mt7996_packet_control.c b/src/an7581/services/wifi/mt7996_packet_control.c
+index b60b512..ed0ef36 100644
+--- a/src/an7581/services/wifi/mt7996_packet_control.c
++++ b/src/an7581/services/wifi/mt7996_packet_control.c
+@@ -52,10 +52,8 @@ enum npu_runtime_result npu_wifi_mt7996_packet_control_enqueue(
+   if (packet_id < 0 || (uint32_t)packet_id >= control->packet_count)
+     return NPU_RUNTIME_OUT_OF_RANGE;
+ 
+-  packet_control = __builtin_assume_aligned(
+-      control->packet_mapping +
+-          (uint32_t)packet_id * NPU_WIFI_MT7996_PACKET_CONTROL_PACKET_STRIDE,
+-      sizeof(uint32_t));
++  packet_control = __builtin_assume_aligned((const void *)(control->packet_mapping +
++          (uint32_t)packet_id * NPU_WIFI_MT7996_PACKET_CONTROL_PACKET_STRIDE), sizeof(uint32_t));
+   packet_length = (uint16_t)((*packet_control & UINT32_C(0x1ffff)) >> 3U);
+   return control->enqueue(
+       control->packet_context, packet_id, packet_length, flow_value, route, 1U,
+diff --git a/src/an7581/services/wifi/mt7996_packet_queue_consumer.c b/src/an7581/services/wifi/mt7996_packet_queue_consumer.c
+index 83883a1..937cb4c 100644
+--- a/src/an7581/services/wifi/mt7996_packet_queue_consumer.c
++++ b/src/an7581/services/wifi/mt7996_packet_queue_consumer.c
+@@ -143,8 +143,7 @@ static void process_valid_entry(
+       entry->packet_id * NPU_WIFI_MT7996_PACKET_QUEUE_PACKET_SIZE;
+   uint16_t packet_id = (uint16_t)entry->packet_id;
+ 
+-  packet_words = __builtin_assume_aligned(
+-      consumer->packet_cached_memory + packet_offset, sizeof(uint32_t));
++  packet_words = __builtin_assume_aligned((const void *)(consumer->packet_cached_memory + packet_offset), sizeof(uint32_t));
+   delivery = (struct npu_wifi_mt7996_packet_delivery){
+       .source_device_address = packet_device_address(consumer, packet_id),
+       .packet_word = *packet_words,
+diff --git a/src/an7581/services/wifi/mt7996_tx_done.c b/src/an7581/services/wifi/mt7996_tx_done.c
+index 172d9fc..0b42c67 100644
+--- a/src/an7581/services/wifi/mt7996_tx_done.c
++++ b/src/an7581/services/wifi/mt7996_tx_done.c
+@@ -317,9 +317,8 @@ npu_wifi_mt7996_tx_done_process(struct npu_wifi_mt7996_tx_done *tx_done,
+     packet_offset =
+         (uint32_t)old_packet_id * NPU_WIFI_MT7996_TX_DONE_PACKET_SIZE;
+     record_words =
+-        __builtin_assume_aligned(tx_done->packet_device_memory + packet_offset +
+-                                     NPU_WIFI_MT7996_TX_DONE_RECORD_OFFSET,
+-                                 sizeof(uint32_t));
++        __builtin_assume_aligned((const void *)(tx_done->packet_device_memory + packet_offset +
++                                     NPU_WIFI_MT7996_TX_DONE_RECORD_OFFSET), sizeof(uint32_t));
+     record_address = packet_device_address(
+         tx_done, old_packet_id, NPU_WIFI_MT7996_TX_DONE_RECORD_OFFSET);
+     record_header = record_words[0];
+@@ -354,8 +353,7 @@ npu_wifi_mt7996_tx_done_process(struct npu_wifi_mt7996_tx_done *tx_done,
+         (uint16_t)((descriptor_control >>
+                     NPU_WIFI_MT7996_TX_DONE_PACKET_LENGTH_SHIFT) &
+                    NPU_WIFI_MT7996_TX_DONE_PACKET_LENGTH_MASK);
+-    packet_control = __builtin_assume_aligned(
+-        tx_done->packet_cached_memory + packet_offset, sizeof(uint32_t));
++    packet_control = __builtin_assume_aligned((const void *)(tx_done->packet_cached_memory + packet_offset), sizeof(uint32_t));
+     *packet_control = NPU_WIFI_MT7996_TX_DONE_PACKET_MARKER |
+                       ((uint32_t)completion.packet_length
+                        << NPU_WIFI_MT7996_TX_DONE_PACKET_MARKER_SHIFT);
+diff --git a/src/an7581/services/wifi/rro_packet_backend.c b/src/an7581/services/wifi/rro_packet_backend.c
+index 4669b36..93f1b04 100644
+--- a/src/an7581/services/wifi/rro_packet_backend.c
++++ b/src/an7581/services/wifi/rro_packet_backend.c
+@@ -35,10 +35,9 @@ static enum npu_runtime_result write_control(void *context, uint16_t buffer_id,
+   if ((uint32_t)buffer_id >= backend->buffer_count)
+     return NPU_RUNTIME_OUT_OF_RANGE;
+ 
+-  control = __builtin_assume_aligned(backend->packet_mapping +
++  control = __builtin_assume_aligned((const void *)(backend->packet_mapping +
+                                          (uint32_t)buffer_id *
+-                                             NPU_WIFI_RRO_PACKET_BUFFER_STRIDE,
+-                                     sizeof(uint32_t));
++                                             NPU_WIFI_RRO_PACKET_BUFFER_STRIDE), sizeof(uint32_t));
+   *control = packet_control;
+   return NPU_RUNTIME_SUCCESS;
+ }
+diff --git a/src/an7581/services/wifi/rro_page_backend.c b/src/an7581/services/wifi/rro_page_backend.c
+index 67b463f..b08e26c 100644
+--- a/src/an7581/services/wifi/rro_page_backend.c
++++ b/src/an7581/services/wifi/rro_page_backend.c
+@@ -87,11 +87,11 @@ map_page(void *context, uint32_t page_address,
+ 
+   record_page = backend->record_mapping + offset;
+   trailer_page = backend->trailer_mapping + offset;
+-  view->records = __builtin_assume_aligned(record_page, sizeof(uint32_t));
++  view->records = __builtin_assume_aligned((const void *)(record_page), sizeof(uint32_t));
+   view->next_page_address =
+-      __builtin_assume_aligned(trailer_page + UINT32_C(0x78), sizeof(uint32_t));
++      __builtin_assume_aligned((const void *)(trailer_page + UINT32_C(0x78)), sizeof(uint32_t));
+   view->readiness =
+-      __builtin_assume_aligned(trailer_page + UINT32_C(0x7c), sizeof(uint32_t));
++      __builtin_assume_aligned((const void *)(trailer_page + UINT32_C(0x7c)), sizeof(uint32_t));
+   return NPU_RUNTIME_SUCCESS;
+ }
+ 
+diff --git a/src/an7581/services/wifi/tx_packet_slow_path.c b/src/an7581/services/wifi/tx_packet_slow_path.c
+index 681762e..5a667cd 100644
+--- a/src/an7581/services/wifi/tx_packet_slow_path.c
++++ b/src/an7581/services/wifi/tx_packet_slow_path.c
+@@ -203,8 +203,7 @@ static bool input_descriptor_is_valid(
+ static void patch_record_token(volatile uint8_t *staging_memory,
+                                uint32_t staging_offset, uint16_t token_id) {
+   volatile struct npu_wifi_tx_buffer_space_record *record =
+-      __builtin_assume_aligned(staging_memory + staging_offset,
+-                               sizeof(uint32_t));
++      __builtin_assume_aligned((const void *)(staging_memory + staging_offset), sizeof(uint32_t));
+   uint32_t token_control = record->token_control;
+ 
+   if (token_control >> 16U != (uint32_t)token_id)
+-- 
+2.39.5
+

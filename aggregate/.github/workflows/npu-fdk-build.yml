@@ -1,0 +1,53 @@
+name: npu-fdk-build
+
+# NPU FDK 构建（阶段 A0）：下载 pin 住的 airoha-npu-fdk 源码，应用 vendored 构建修复，
+# 用 clang/lld/llvm 构建成对固件，并做两次构建的 sha256 可复现校验。
+# 产物仅上传 artifact，不进入官方固件包（设备验证见 PLAN A1/A2）。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npu-fdk-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 clang/lld/llvm 工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm curl ca-certificates patch python3
+
+      - name: 构建 FDK（第一次）
+        run: ./scripts/build-npu-fdk.sh
+        env:
+          NPU_FDK_OUTPUT_DIR: tmp/npu-fdk-dist-a
+
+      - name: 构建 FDK（第二次，可复现校验）
+        run: ./scripts/build-npu-fdk.sh
+        env:
+          NPU_FDK_OUTPUT_DIR: tmp/npu-fdk-dist-b
+
+      - name: 校验两次构建 sha256 一致
+        run: |
+          set -euo pipefail
+          (cd tmp/npu-fdk-dist-a && sha256sum en7581_MT7996_npu_*.bin | sort) > /tmp/npu-fdk-a.sha256
+          (cd tmp/npu-fdk-dist-b && sha256sum en7581_MT7996_npu_*.bin | sort) > /tmp/npu-fdk-b.sha256
+          diff -u /tmp/npu-fdk-a.sha256 /tmp/npu-fdk-b.sha256
+          cat /tmp/npu-fdk-a.sha256
+
+      - name: 上传 artifact（npu-firmware-fdk）
+        uses: actions/upload-artifact@v4
+        with:
+          name: npu-firmware-fdk
+          path: |
+            tmp/npu-fdk-dist-a/en7581_MT7996_npu_rv32.bin
+            tmp/npu-fdk-dist-a/en7581_MT7996_npu_data.bin

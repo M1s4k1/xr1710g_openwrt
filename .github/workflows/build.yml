@@ -5,18 +5,15 @@ name: build
 # 为什么走 CI：全量构建 1–3 小时且吃满 CPU，用 CI 避免占用本地机器；
 #   CI 每次全新环境，配合 ccache 重复构建显著加速。
 #
-# 仓库定位：本仓库是叠加层（相对 genshanxinli/xr1710g-openwrt 的差异），
-#   不含 OpenWrt 源码。CI 流水线组合三份物料：
-#     ① 本仓库（mine）：local/ 规则 + 9501/9601/9602 本地自研补丁
-#     ② 上游叠加层（upstream）：genshanxinli/xr1710g-openwrt 补丁主体
-#     ③ OpenWrt 源码树（openwrt）：构建基座
+# 仓库定位：本仓库内置 aggregate 补丁层，但不含 OpenWrt 源码。
+#   CI 组合两份物料：① 本仓库（含 aggregate/ 与 local/）；② OpenWrt 源码树。
 #   流程：stage.sh 合成 .stage/ → audit 校验 → 编译出 .itb 固件 → 上传产物与 Release。
 
 on:
   workflow_dispatch:
     inputs:
       profile:
-        description: '档位：stock=func 正式档（104 活动，推荐）/ v1-safe=保守档（63 活动）'
+        description: '档位：stock=func 正式档（104 活动，推荐）/ v1-safe=保守档（64 活动）'
         default: 'stock'
         required: true
         type: choice
@@ -26,10 +23,6 @@ on:
       openwrt_ref:
         description: 'OpenWrt 源码树 ref（默认 6.18.44 基线快照，对齐上游 BASELINE_UPSTREAM）'
         default: '7f4f824691fb2258afe9eb9a37da46d3557c4043'
-        required: true
-      upstream_ref:
-        description: '上游叠加层 ref（默认 func 基线快照，已推进至 ci-177）'
-        default: '244d433374b5a49904d6ca107f078553b37c6111'
         required: true
       create_release:
         description: '构建成功后是否自动创建 GitHub Release'
@@ -46,7 +39,6 @@ jobs:
     env:
       PROFILE: ${{ github.event.inputs.profile || 'stock' }}
       TREE: ${{ github.workspace }}/openwrt
-      UPSTREAM_DIR: ${{ github.workspace }}/upstream
     steps:
       - name: 清理磁盘空间（释放 ~35GB 冗余预装套件）
         run: |
@@ -57,14 +49,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: mine
-
-      - name: 取上游叠加层（pin ref）
-        run: |
-          set -euo pipefail
-          git clone -q https://github.com/genshanxinli/xr1710g-openwrt.git "$UPSTREAM_DIR"
-          cd "$UPSTREAM_DIR"
-          git checkout -q "${{ github.event.inputs.upstream_ref || '1fea1e59e4baccabfcf751ab6a57d78a1dfdd16a' }}"
-          echo "Upstream commit: $(git rev-parse --short HEAD)"
 
       - name: 克隆 OpenWrt 源码树（pin ref）
         run: |
@@ -95,7 +79,7 @@ jobs:
           restore-keys: openwrt-${{ env.PROFILE }}
           max-size: 3G
 
-      - name: stage 合成（上游 + 本仓库差异）
+      - name: stage 合成（内置 aggregate + 本仓库 local）
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -103,7 +87,6 @@ jobs:
           STAGE_TIER="func"
           [[ "$PROFILE" == "v1-safe" ]] && STAGE_TIER="v1-safe"
           bash "$GITHUB_WORKSPACE/mine/scripts/stage.sh" \
-            --upstream "$UPSTREAM_DIR" \
             --out "$GITHUB_WORKSPACE/.stage" \
             --tier "$STAGE_TIER" \
             --disable-oc 1
@@ -112,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/mine"
-          bash scripts/audit-local.sh --upstream "$UPSTREAM_DIR"
+          bash scripts/audit-local.sh
 
       - name: 配置 ccache 到构建流程
         run: |
@@ -186,8 +169,8 @@ jobs:
           body: |
             ### 构建信息
             - **档位 (Profile)**: `${{ github.event.inputs.profile || 'stock' }}`
-            - **上游基线 (Upstream)**: `${{ github.event.inputs.upstream_ref || '1fea1e59' }}`
-            - **OpenWrt 基座**: `${{ github.event.inputs.openwrt_ref || 'f1230284' }}`
+            - **Aggregate**: `embedded snapshot 244d433`
+            - **OpenWrt 基座**: `${{ github.event.inputs.openwrt_ref || '7f4f824691' }}`
             - **CPU 频率**: 1200MHz (已关超频，稳定性优先)
             - **网口映射**: 10G-1=WAN(eth1), 10G-2=LAN(eth2), 1G-1=LAN(lan2), 1G-2=LAN(lan3)
             - **默认 LAN IP**: `192.168.2.1`

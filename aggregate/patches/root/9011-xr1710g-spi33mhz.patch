@@ -1,0 +1,23 @@
+From 36da8e02b2e12f56ff3582770da2a34499d42613 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Sat, 10 Jan 2026 09:58:15 -1000
+Subject: xr1710g: drop SPI-NAND clock to 33MHz for sysupgrade reliability
+
+Bring down SPI freq to 33MHz for better sysupgrade reliability (board-level, XR1710G).
+
+（2026-08-17 F13 切片：源 = vendor/fanboy/08-reliability-compat-36da8e02.patch 的 spi 段；
+ 重建/应用顺序实证见 FIXES F13。上游：n/a（自用可靠性/体验项，不打算上游））
+---
+diff --git a/target/linux/airoha/dts/an7581.dtsi b/target/linux/airoha/dts/an7581.dtsi
+index 6880b6f..f9c1abe 100644
+--- a/target/linux/airoha/dts/an7581.dtsi
++++ b/target/linux/airoha/dts/an7581.dtsi
+@@ -716,7 +716,7 @@
+ 			spi_nand: nand@0 {
+ 				compatible = "spi-nand";
+ 				reg = <0>;
+-				spi-max-frequency = <50000000>;
++				spi-max-frequency = <33000000>;
+ 				spi-tx-bus-width = <1>;
+ 				spi-rx-bus-width = <2>;
+ 			};

@@ -1,0 +1,42 @@
+# Source: Gilly1970/Gemtek-W1700K-6.18 `openwrt-patches/048-wifi-mt76-mt7996-guard-null-sta-on-eapol-tx.patch`
+#   （2026-09-13 Gilly「Bump Kernel-6.18.51 and rebase」提交 a57615652 新增；作者 Slavin Liu <bolin.liu@seu.edu.cn>）
+# Upstream: open（上游 RFC「wifi: mt76: mt7996: guard station-only MLO TX handling」的**剩余未守卫半边**；
+#   本仓 pin be5ce791 尚无 → 需携带，pin bump 时复查可否删）
+# Reason: mac80211 允许「源地址为本机」的 EAPOL 帧发往未授权目的，hostapd 因此可能把**已删除站点**的
+#   控制端口帧交给驱动（4 次握手重传与 disconnect 竞态）→ mt7996_tx() 传 NULL sta →
+#   mt7996_tx_prepare_skb() 的软件 MLD 地址翻译**无条件**解引用 `sta->mlo` → TX worker oops。
+#   同函数前面的 data-QoS MLO link 选择**已**检查 sta（pin 源 `mt7996/mac.c:1057`
+#   `(is_8023 || …) && sta && sta->mlo && …`），本条是同一不对称的剩余半边（F153）。
+# 实证：对 mt76 pin 真源 be5ce791 `patch -p1 --fuzz=0 --dry-run` **rc=0**（仅 mt7996/mac.c）；
+#   `sta == NULL` 时只是跳过软件 MLD 翻译（该分支对无站点帧本就不适用），`sta != NULL` 时语义逐字节不变
+#   ⇒ 纯防御性 NULL 守卫，故定档 **default**（两档同效收益：stock 同样会在 EAPOL 竞态下走该路径）。
+From: Slavin Liu <bolin.liu@seu.edu.cn>
+Date: Sun, 13 Sep 2026 00:00:00 +0000
+Subject: [PATCH] wifi: mt76: mt7996: guard NULL sta on the EAPOL TX path
+
+mac80211 lets EAPOL frames sourced from the local address through to an
+unauthorized destination, so hostapd can hand the driver a control-port
+frame for a station that has already been removed (e.g. a 4-way handshake
+retransmit racing a disconnect). mt7996_tx() then passes a NULL sta and the
+frame reaches mt7996_tx_prepare_skb() with skb->protocol == ETH_P_PAE, where
+the software MLD address translation dereferences sta->mlo unconditionally
+and oopses in the TX worker.
+
+The data-QoS MLO link selection earlier in the function already checks sta
+at our mt76 pin; this is the remaining unguarded half of the upstream RFC
+"wifi: mt76: mt7996: guard station-only MLO TX handling".
+
+Signed-off-by: Slavin Liu <bolin.liu@seu.edu.cn>
+---
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1097,7 +1097,7 @@ int mt7996_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
+ 	 * compatible with 802.11 EAPOL frame, we do the translation by
+ 	 * software
+ 	 */
+-	if (tx_info->skb->protocol == cpu_to_be16(ETH_P_PAE) && sta->mlo) {
++	if (sta && tx_info->skb->protocol == cpu_to_be16(ETH_P_PAE) && sta->mlo) {
+ 		struct ieee80211_hdr *hdr = (void *)tx_info->skb->data;
+ 		struct ieee80211_bss_conf *link_conf;
+ 		struct ieee80211_link_sta *link_sta;

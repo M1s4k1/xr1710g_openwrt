@@ -1,0 +1,78 @@
+{
+  "schema": "xr1710g-upstream-sources/v1",
+  "description": "JSON document (valid YAML subset) so the read-only scanner needs no third-party YAML package.",
+  "sources": [
+    {
+      "id": "openwrt",
+      "url": "https://github.com/openwrt/openwrt.git",
+      "ref": "refs/heads/main",
+      "baseline": "7f4f824691fb2258afe9eb9a37da46d3557c4043",
+      "baseline_is_exact": true,
+      "purpose": "OpenWrt upstream base; inspect Airoha, generic Linux 6.18 and mt76 integration changes.",
+      "focus_paths": ["target/linux/airoha/", "target/linux/generic/", "package/kernel/mt76/"]
+    },
+    {
+      "id": "yyh-openwrt",
+      "url": "https://github.com/YYH2913/openwrt.git",
+      "ref": "refs/heads/xr1710g-6.18-integration",
+      "baseline": "c82129e734",
+      "baseline_is_exact": false,
+      "purpose": "YYH XR1710G patch-set reference.",
+      "focus_paths": ["patches/", "target/linux/airoha/", "package/kernel/mt76/"]
+    },
+    {
+      "id": "yyh-mt76",
+      "url": "https://github.com/YYH2913/mt76.git",
+      "ref": "HEAD",
+      "baseline": "2dd6e4c8",
+      "baseline_is_exact": false,
+      "purpose": "YYH/MTK mt76 driver source.",
+      "focus_paths": ["mt7996/", "mt76/", "dma.c", "mcu.c"]
+    },
+    {
+      "id": "yyh-http-uboot",
+      "url": "https://github.com/YYH2913/http-uboot.git",
+      "ref": "HEAD",
+      "baseline": "53b73174c",
+      "baseline_is_exact": false,
+      "purpose": "HTTP U-Boot recovery reference; informational, not a firmware patch source.",
+      "focus_paths": ["."]
+    },
+    {
+      "id": "fanboy-openw1700k",
+      "url": "https://github.com/OpenWRT-fanboy/OpenW1700k.git",
+      "ref": "refs/heads/ubi2-oc",
+      "baseline": "ca46e0a4e",
+      "baseline_is_exact": false,
+      "purpose": "Vendor/fanboy patch materials; compare against existing vendor/fanboy inputs.",
+      "focus_paths": ["patches/", "package/", "wifi-scripts/"]
+    },
+    {
+      "id": "gilly-w1700k",
+      "url": "https://github.com/Gilly1970/Gemtek-W1700K-6.18.git",
+      "ref": "HEAD",
+      "baseline": "38806db2d",
+      "baseline_is_exact": false,
+      "purpose": "Gemtek W1700K patch reference; check hardware applicability before considering.",
+      "focus_paths": ["openwrt-patches/", "target/linux/airoha/", "package/kernel/mt76/"]
+    },
+    {
+      "id": "naoki-xr1710g",
+      "url": "https://github.com/naoki66/ImmortalWrt-for-Gemtek-XR1710G.git",
+      "ref": "HEAD",
+      "baseline": "5a71e6a53",
+      "baseline_is_exact": false,
+      "purpose": "XR1710G-specific fork; compare source files already referenced by this project.",
+      "focus_paths": ["target/linux/airoha/", "package/kernel/mt76/", "package/kernel/mac80211/", "patches/"]
+    },
+    {
+      "id": "hurryman-openw1700k-test",
+      "url": "https://github.com/hurryman2212/OpenW1700k-test.git",
+      "ref": "refs/heads/offload-oc",
+      "baseline": "73c3ab308",
+      "baseline_is_exact": false,
+      "purpose": "SOE/xfrm/EIP93 experimental source; project currently excludes related functionality.",
+      "focus_paths": ["patches/", "target/linux/airoha/", "package/crypto/"]
+    }
+  ]
+}

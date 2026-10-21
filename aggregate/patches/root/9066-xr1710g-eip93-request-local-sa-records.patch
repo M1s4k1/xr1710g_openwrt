@@ -1,0 +1,276 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9917
+#   (author Jihong Min / hurryman2212, 2026-05-25; kernel `Fixes: 9739f5f93b78`,
+#    Reported-by/Suggested-by Benjamin Larsson) -- 2026-09-14 F162 rebase+absorb, #EXP
+# Upstream: open (not in backports; revisit on pin bump)
+# Reason: EIP93 request-local SA records (inner 9999-44) -- cipher/AEAD requests wrote the
+#   mutable direction/copy flags straight into the **tfm-level** SA record
+#   (`ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN` in the decrypt path)
+#   => concurrent requests on the same tfm leak decrypt flags into encrypt (SA record
+#   contamination, wrong results under concurrency). Fix: copy the SA record into the
+#   request context, apply request-specific flags only to the copy, DMA-map it per request,
+#   unmap on completion and failure paths, drop the ctx-level unmap in cra_exit, and remove
+#   the ctx-level `sa_record_base` field.
+# Rebase note: original 9917 only held for vanilla 6.18.44 (4/7 hunks FAILED on kreal3).
+#   The conflict is **context only**: this repo's baseline already carries the OpenWrt kernel
+#   patch set's EIP93 dynamic software fallback (`eip93_skcipher_is_fallback()`,
+#   `crypt(req, bool encrypt)`, early-return fallback branch), which shifted cipher.c hunks
+#   #4/#5/#7; every semantic site is still present. This rebase keeps the fallback branch
+#   **line for line** (a fallback hit still goes straight to software without touching any SA
+#   record) and follows 9917 for the rest. aead.c's 9917 target state already exists (all
+#   hunks pass), so this item only changes the cipher path + the shared unmap paths.
+# Gate #EXP: same layer/gate as vendor/02 (EIP93 driver) + 9054 (dynamic fallback) + 9060
+#   (packaging) + 9062 (three reliability fixes) + 9065 (9919 request IDs): all or nothing.
+# Order: touches eip93-cipher.{c,h} and eip93-common.c unmap paths, no overlap with
+#   9999-40..43; glob order places it after 9999-43.
+# Local triple proof: (1) audit --oc --experimental 133/133, --oc 62/62; (2) dry-run
+#   133 processed / 0 skipped / 0 missing + all copy-class checks; (3) inner patch on the
+#   kreal3 model tree (this repo's full inner sequence end state) `patch -p1 --fuzz=0`:
+#   **16/16 hunks clean, zero offset, zero fuzz**, and the four files afterwards are
+#   byte-identical to the hand-ported end state.
+# CI evidence: see the F162 row in docs/FIXES.md.
+diff --git a/target/linux/airoha/patches-6.18/9999-44-crypto-eip93-request-local-sa-records.patch b/target/linux/airoha/patches-6.18/9999-44-crypto-eip93-request-local-sa-records.patch
+new file mode 100644
+index 0000000..1d8a262
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-44-crypto-eip93-request-local-sa-records.patch
+@@ -0,0 +1,240 @@
++# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9917-crypto-eip93-use-request-local-SA-records-for-cipher-requests.patch
++#   （作者 Jihong Min / hurryman2212，2026-05-25；内核侧 `Fixes: 9739f5f93b78`，
++#    Reported-by/Suggested-by Benjamin Larsson）—— 2026-09-14 F162 重基吸收，#EXP
++# Upstream: open（未进 backports；pin bump 时复查可否删本层）
++# Reason: cipher/AEAD 请求把可变的 direction 与 copy 标志直接写在 **tfm 级** SA record 上
++#   （`ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN`，在 decrypt 路径就地改写）
++#   ⇒ 同一 tfm 上的并发请求会把 decrypt 的 direction/copy-pad 泄漏给 encrypt（SA record 串味，
++#   并发加解密结果错误）。修法：把准备好的 SA record **复制进请求上下文**（`rctx->sa_record`）、
++#   请求特定标志只改这份副本、按请求做 DMA 映射，并在正常完成与失败路径 unmap；cra_exit 去掉
++#   ctx 级 unmap；ctx 级 `sa_record_base` 字段整体删除。
++# 重基说明（F160 配方 / F162 落地）：原 9917 只对 **vanilla** 6.18.44 成立（kreal3 上 4/7 hunk
++#   FAILED）。冲突面只是 **上下文**：本仓基线自带 openwrt 内核补丁集的 EIP93 动态软回退
++#   （`eip93_skcipher_is_fallback()`、`crypt(req, bool encrypt)`、fallback 早返回分支），
++#   `cipher.c` 的 hunk #4/#5/#7 因该分支插入而错位，语义位置都在。本次重基**逐行保留**软回退
++#   分支（fallback 命中时仍照旧直接走软件实现并返回，不触碰任何 SA record），其余照 9917 原样。
++#   `aead.c`/`cipher.h`/`common.c` 的 hunk 原样通过（aead 侧 9917 目标态本就存在 ⇒ 本项只改
++#   cipher 路径与公共 unmap 路径）。
++# 档位 #EXP：与 vendor/02（EIP93 驱动）+ 9054（动态回退）+ 9060（打包）+ 9062（三条可靠性）
++#   + 9065（9919 请求 ID）同层同档，缺一不可。
++# 顺序：本项改 `eip93-cipher.{c,h}` 与 `eip93-common.c`（unmap 路径），与 9999-40..43 不重叠；
++#   置于 9999-43 之后（glob 序 9999-44），仍在 `package/kernel/mac80211` 类外层之后无耦合。
++# 实证（本地三证）：① `audit-patches --oc --experimental` 133/133、`--oc` 62/62；
++#   ② `apply-patches --dry-run --oc --experimental` 处理 133 / 跳过 0 / 缺失 0 + 拷贝类全过；
++#   ③ 内层对模型树 `research-20260912/inner/kreal3`（= 本仓内层全序终态）`patch -p1 --fuzz=0`
++#   **16/16 hunk 干净应用、零 offset、零 fuzz**，且应用后四文件与逐行移植的终态**逐字节相同**。
++# CI 实证见 docs/FIXES.md 的 F162 行。
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-aead.c b/drivers/crypto/inside-secure/eip93/eip93-aead.c
++index 18dd8a9..f5c3511 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-aead.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-aead.c
++@@ -42,12 +42,18 @@ void eip93_aead_handle_result(struct crypto_async_request *async, int err)
++ 
++ static int eip93_aead_send_req(struct crypto_async_request *async)
++ {
+++	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(async->tfm);
++ 	struct aead_request *req = aead_request_cast(async);
++ 	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
++ 	int err;
++ 
++ 	err = check_valid_request(rctx);
++ 	if (err) {
+++		if (rctx->sa_record_base) {
+++			dma_unmap_single(ctx->eip93->dev, rctx->sa_record_base,
+++					 sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++			rctx->sa_record_base = 0;
+++		}
++ 		aead_request_complete(req, err);
++ 		return err;
++ 	}
++@@ -81,8 +87,6 @@ static void eip93_aead_cra_exit(struct crypto_tfm *tfm)
++ {
++ 	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
++ 
++-	dma_unmap_single(ctx->eip93->dev, ctx->sa_record_base,
++-			 sizeof(*ctx->sa_record), DMA_TO_DEVICE);
++ 	kfree(ctx->sa_record);
++ }
++ 
++@@ -191,11 +195,24 @@ static int eip93_aead_crypt(struct aead_request *req)
++ 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
++ 	int ret;
++ 
++-	ctx->sa_record_base = dma_map_single(ctx->eip93->dev, ctx->sa_record,
++-					     sizeof(*ctx->sa_record), DMA_TO_DEVICE);
++-	ret = dma_mapping_error(ctx->eip93->dev, ctx->sa_record_base);
++-	if (ret)
+++	memcpy(&rctx->sa_record, ctx->sa_record, sizeof(rctx->sa_record));
+++	if (IS_DECRYPT(rctx->flags)) {
+++		rctx->sa_record.sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
+++		rctx->sa_record.sa_cmd1_word &= ~(EIP93_SA_CMD_COPY_PAD |
+++						   EIP93_SA_CMD_COPY_DIGEST);
+++	} else {
+++		rctx->sa_record.sa_cmd0_word &= ~EIP93_SA_CMD_DIRECTION_IN;
+++		rctx->sa_record.sa_cmd1_word |= EIP93_SA_CMD_COPY_PAD |
+++						 EIP93_SA_CMD_COPY_DIGEST;
+++	}
+++
+++	rctx->sa_record_base = dma_map_single(ctx->eip93->dev, &rctx->sa_record,
+++					      sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++	ret = dma_mapping_error(ctx->eip93->dev, rctx->sa_record_base);
+++	if (ret) {
+++		rctx->sa_record_base = 0;
++ 		return ret;
+++	}
++ 
++ 	rctx->textsize = req->cryptlen;
++ 	rctx->blksize = ctx->blksize;
++@@ -205,7 +222,6 @@ static int eip93_aead_crypt(struct aead_request *req)
++ 	rctx->sg_dst = req->dst;
++ 	rctx->ivsize = crypto_aead_ivsize(aead);
++ 	rctx->desc_flags = EIP93_DESC_AEAD;
++-	rctx->sa_record_base = ctx->sa_record_base;
++ 
++ 	if (IS_DECRYPT(rctx->flags))
++ 		rctx->textsize -= rctx->authsize;
++@@ -238,10 +254,6 @@ static int eip93_aead_decrypt(struct aead_request *req)
++ 	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
++ 	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
++ 
++-	ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
++-	ctx->sa_record->sa_cmd1_word &= ~(EIP93_SA_CMD_COPY_PAD |
++-					  EIP93_SA_CMD_COPY_DIGEST);
++-
++ 	rctx->flags = ctx->flags;
++ 	rctx->flags |= EIP93_DECRYPT;
++ 	if (ctx->set_assoc) {
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-cipher.c b/drivers/crypto/inside-secure/eip93/eip93-cipher.c
++index f34f938..c5892ff 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-cipher.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-cipher.c
++@@ -39,6 +39,7 @@ static inline bool eip93_skcipher_is_fallback(const struct crypto_tfm *tfm,
++ 
++ static int eip93_skcipher_send_req(struct crypto_async_request *async)
++ {
+++	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(async->tfm);
++ 	struct skcipher_request *req = skcipher_request_cast(async);
++ 	struct eip93_cipher_reqctx *rctx = skcipher_request_ctx(req);
++ 	int err;
++@@ -46,6 +47,11 @@ static int eip93_skcipher_send_req(struct crypto_async_request *async)
++ 	err = check_valid_request(rctx);
++ 
++ 	if (err) {
+++		if (rctx->sa_record_base) {
+++			dma_unmap_single(ctx->eip93->dev, rctx->sa_record_base,
+++					 sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++			rctx->sa_record_base = 0;
+++		}
++ 		skcipher_request_complete(req, err);
++ 		return err;
++ 	}
++@@ -88,8 +94,6 @@ static void eip93_skcipher_cra_exit(struct crypto_tfm *tfm)
++ {
++ 	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
++ 
++-	dma_unmap_single(ctx->eip93->dev, ctx->sa_record_base,
++-			 sizeof(*ctx->sa_record), DMA_TO_DEVICE);
++ 	kfree(ctx->sa_record);
++ 
++ 	crypto_free_skcipher(ctx->fallback);
++@@ -195,11 +199,19 @@ static int eip93_skcipher_crypt(struct skcipher_request *req, bool encrypt)
++ 				 crypto_skcipher_decrypt(&rctx->fallback_req);
++ 	}
++ 
++-	ctx->sa_record_base = dma_map_single(ctx->eip93->dev, ctx->sa_record,
++-					     sizeof(*ctx->sa_record), DMA_TO_DEVICE);
++-	ret = dma_mapping_error(ctx->eip93->dev, ctx->sa_record_base);
++-	if (ret)
+++	memcpy(&rctx->sa_record, ctx->sa_record, sizeof(rctx->sa_record));
+++	if (encrypt)
+++		rctx->sa_record.sa_cmd0_word &= ~EIP93_SA_CMD_DIRECTION_IN;
+++	else
+++		rctx->sa_record.sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
+++
+++	rctx->sa_record_base = dma_map_single(ctx->eip93->dev, &rctx->sa_record,
+++					      sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++	ret = dma_mapping_error(ctx->eip93->dev, rctx->sa_record_base);
+++	if (ret) {
+++		rctx->sa_record_base = 0;
++ 		return ret;
+++	}
++ 
++ 	rctx->assoclen = 0;
++ 	rctx->textsize = req->cryptlen;
++@@ -209,7 +221,6 @@ static int eip93_skcipher_crypt(struct skcipher_request *req, bool encrypt)
++ 	rctx->ivsize = crypto_skcipher_ivsize(skcipher);
++ 	rctx->blksize = ctx->blksize;
++ 	rctx->desc_flags = EIP93_DESC_SKCIPHER;
++-	rctx->sa_record_base = ctx->sa_record_base;
++ 
++ 	return eip93_skcipher_send_req(async);
++ }
++@@ -228,13 +239,10 @@ static int eip93_skcipher_encrypt(struct skcipher_request *req)
++ 
++ static int eip93_skcipher_decrypt(struct skcipher_request *req)
++ {
++-	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
++ 	struct eip93_cipher_reqctx *rctx = skcipher_request_ctx(req);
++ 	struct eip93_alg_template *tmpl = container_of(req->base.tfm->__crt_alg,
++ 				struct eip93_alg_template, alg.skcipher.base);
++ 
++-	ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
++-
++ 	rctx->flags = tmpl->flags;
++ 	rctx->flags |= EIP93_DECRYPT;
++ 
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-cipher.h b/drivers/crypto/inside-secure/eip93/eip93-cipher.h
++index b61ff4a..9dac8af 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-cipher.h
+++++ b/drivers/crypto/inside-secure/eip93/eip93-cipher.h
++@@ -9,6 +9,7 @@
++ #define _EIP93_CIPHER_H_
++ 
++ #include "eip93-main.h"
+++#include "eip93-regs.h"
++ 
++ struct eip93_crypto_ctx {
++ 	struct eip93_device		*eip93;
++@@ -16,7 +17,6 @@ struct eip93_crypto_ctx {
++ 	struct sa_record		*sa_record;
++ 	u32				sa_nonce;
++ 	int				blksize;
++-	dma_addr_t			sa_record_base;
++ 	/* AEAD specific */
++ 	unsigned int			authsize;
++ 	unsigned int			assoclen;
++@@ -33,6 +33,7 @@ struct eip93_cipher_reqctx {
++ 	unsigned int			textsize;
++ 	unsigned int			assoclen;
++ 	unsigned int			authsize;
+++	struct sa_record		sa_record __aligned(CRYPTO_DMA_ALIGN);
++ 	dma_addr_t			sa_record_base;
++ 	struct sa_state			*sa_state;
++ 	dma_addr_t			sa_state_base;
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-common.c b/drivers/crypto/inside-secure/eip93/eip93-common.c
++index 5f920cd..ed0a11f 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-common.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-common.c
++@@ -637,6 +637,10 @@ free_sa_state_ctr:
++ 				 DMA_TO_DEVICE);
++ free_sa_state:
++ 	kfree(rctx->sa_state);
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++	rctx->sa_record_base = 0;
++ 
++ 	return err;
++ }
++@@ -698,6 +702,11 @@ void eip93_handle_result(struct eip93_device *eip93, struct eip93_cipher_reqctx
++ 				 sizeof(*rctx->sa_state),
++ 				 DMA_FROM_DEVICE);
++ 
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++	rctx->sa_record_base = 0;
+++
++ 	if (!IS_ECB(rctx->flags))
++ 		memcpy(reqiv, rctx->sa_state->state_iv, rctx->ivsize);
++ 

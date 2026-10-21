@@ -1,0 +1,122 @@
+diff --git a/drivers/char/hw_random/airoha-trng.c b/drivers/char/hw_random/airoha-trng.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/char/hw_random/airoha-trng.c
+@@ -0,0 +1,117 @@
++# Source: XR1710G self-held kernel patch -- naoki66 原作 / orangeyoo patches/kernel/0921（v1.6.1 顺序修正）
++#   + OpenWRT-fanboy/OpenW1700k PR#1 patch 18/18（经 yyh2913-patches 920 的 SCU 上下文）。
++# Upstream: n/a（上游 airoha-trng 无 SCU/时钟门处理）
++# Reason: TRNG 在 SCU 总线/外设时钟门后面；原代码先写 RNG_EN（开振荡器/环）再谈时钟门（且本仓原本
++#   完全没有时钟门代码）→ 冷启动时可能在时钟被门控的状态下访问 TRNG，启动健康检查竞争失败，
++#   hwrng 注册 -ENODEV、整机无硬件熵源。修法：先开 SCU 三道时钟门（bus/per1/per2），再置
++#   RNG_EN | RNG_OSC_EN。**不改**输出模式（raw/DRBG）与熵质量（orangeyoo 缓存版 0921 依赖
++#   920 引入的 SCU 代码，单独应用在本仓真源上畸形/失败，故按本仓真源重写为一份自洽补丁）。
++#   句柄缺省时（DT 无 airoha,scu）行为与之前一致。
++# 实证：对本仓 kernel 6.18.44 真源 drivers/char/hw_random/airoha-trng.c 干净应用（fuzz 0）。
++# 档位 #EXP：必须实机反复冷启动验证（N>=20），无实机不得毕业。
++# 判据：N>=20 次冷启动 `dmesg | grep airoha-trng` 均有且无 -ENODEV；
++#   `cat /sys/class/misc/hw_random/rng_current` = airoha。
++From: XR1710G Community <noreply@localhost>
++Subject: [PATCH] hwrng: airoha: open SCU clock gates before enabling the TRNG
++
++The Airoha TRNG block sits behind the SCU bus/peripheral clock gates
++(SCU_BUS_CLK_GAT bit 3, SCU_PER_CLK_GAT_1 bit 21, SCU_PER_CLK_GAT_2
++bit 0).  The TRNG_NS_SEK_AND_DAT_EN write that powers the oscillator and
++the ring (RNG_OSC_EN | RNG_EN) was issued before those gates were
++opened, so on a cold boot the block could be accessed while its clock
++was still gated and the startup health check raced: hwrng registration
++failed with -ENODEV ("Timeout waiting for Health Check") and the board
++booted without a hardware entropy source.
++
++Open the clock gates first, then touch the TRNG block.  While here, set
++RNG_OSC_EN together with RNG_EN as the vendor bootloader does.
++
++This is a minimal ordering/clock fix.  It deliberately does not change
++which output the driver reads (raw vs DRBG) nor the reported entropy
++quality; both stay exactly as they are.
++
++The SCU regmap is looked up through the "airoha,scu" phandle.  When the
++phandle is absent (no clock gating configured for the block) the driver
++keeps the previous behaviour.
++
++Derived from OpenWRT-fanboy/OpenW1700k PR #1 patch 18/18 (via
++yyh2913-patches 920, which also switches the driver to DRBG output -
++that part is not taken here) and the XR1710G community v1.6.1 ordering
++fix (orangeyoo patches/kernel/0921, naoki66 original): the cached 0921
++only reorders code that 920 introduces, so the two are carried as one
++patch against this tree's real base.
++
++Signed-off-by: XR1710G Community <noreply@localhost>
++---
++ drivers/char/hw_random/airoha-trng.c | 23 ++++++++++++++++++++----
++ 1 file changed, 22 insertions(+), 1 deletions(-)
++
++--- a/drivers/char/hw_random/airoha-trng.c
+++++ b/drivers/char/hw_random/airoha-trng.c
++@@ -10,7 +10,9 @@
++ #include <linux/interrupt.h>
++ #include <linux/io.h>
++ #include <linux/iopoll.h>
+++#include <linux/mfd/syscon.h>
++ #include <linux/platform_device.h>
+++#include <linux/regmap.h>
++ 
++ #define TRNG_IP_RDY			0x800
++ #define   CNT_TRANS			GENMASK(15, 8)
++@@ -18,6 +20,7 @@
++ #define TRNG_NS_SEK_AND_DAT_EN		0x804
++ #define	  RNG_EN			BIT(31) /* referenced as ring_en */
++ #define	  RAW_DATA_EN			BIT(16)
+++#define	  RNG_OSC_EN			BIT(1)
++ #define TRNG_HEALTH_TEST_SW_RST		0x808
++ #define   SW_RST			BIT(0) /* Active High */
++ #define TRNG_INTR_EN			0x818
++@@ -39,6 +42,13 @@
++ 
++ #define TRNG_RAW_DATA_OUT		0x828
++ 
+++#define REG_SCU_BUS_CLK_GAT		0x1e4
+++#define REG_SCU_PER_CLK_GAT_1		0x1ec
+++#define REG_SCU_PER_CLK_GAT_2		0x200
+++#define   SCU_TRNG_BUS_EN		BIT(3)
+++#define   SCU_TRNG_PER1_EN		BIT(21)
+++#define   SCU_TRNG_PER2_EN		BIT(0)
+++
++ #define TRNG_CNT_TRANS_VALID		0x80
++ #define BUSY_LOOP_SLEEP			10
++ #define BUSY_LOOP_TIMEOUT		(BUSY_LOOP_SLEEP * 10000)
++@@ -49,6 +59,7 @@
++ 	struct device *dev;
++ 
++ 	struct completion rng_op_done;
+++	struct regmap *scu;
++ };
++ 
++ static int airoha_trng_irq_mask(struct airoha_trng *trng)
++@@ -79,8 +90,14 @@
++ 	int ret;
++ 	u32 val;
++ 
+++	if (trng->scu) {
+++		regmap_set_bits(trng->scu, REG_SCU_BUS_CLK_GAT, SCU_TRNG_BUS_EN);
+++		regmap_set_bits(trng->scu, REG_SCU_PER_CLK_GAT_1, SCU_TRNG_PER1_EN);
+++		regmap_set_bits(trng->scu, REG_SCU_PER_CLK_GAT_2, SCU_TRNG_PER2_EN);
+++	}
+++
++ 	val = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
++-	val |= RNG_EN;
+++	val |= RNG_EN | RNG_OSC_EN;
++ 	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN);
++ 
++ 	/* Set out of SW Reset */
++@@ -180,6 +197,10 @@
++ 	if (IS_ERR(trng->base))
++ 		return PTR_ERR(trng->base);
++ 
+++	trng->scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
+++	if (IS_ERR(trng->scu))
+++		trng->scu = NULL;
+++
++ 	irq = platform_get_irq(pdev, 0);
++ 	if (irq < 0)
++ 		return irq;

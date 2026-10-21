@@ -1,0 +1,137 @@
+# Source: YYH2913/openwrt mt76/0154（Yanghan Ye, 2026-08-07）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a
+# Reason: NPU offload 生效时 dma_dev 被改成 NPU 设备，dmam_alloc_coherent() 会把 queue
+#   descriptor/MT7996 NPU TXD 挂到 supplier（NPU）上 → 重载 Wi-Fi 驱动会**泄漏**，
+#   直到 NPU provider 被移除。修法：新增 mt76_dma_alloc_coherent()——dma_dev == dev->dev 时
+#   退化为 dmam_alloc_coherent()；否则 dma_alloc_coherent + get_device，并用
+#   devm_add_action_or_reset(dev->dev, ...) 把释放挂在 **Wi-Fi consumer** 上；
+#   dma.c 描述符分配与 mt7996/npu.c 的 3 处 npu_txd_addr[] 改用它。
+# **本地增补（F126）**：原补丁在 devm_add_action_or_reset() 失败时只 return NULL，但
+#   dma_alloc_coherent 已成功、get_device 已加引用 → 泄漏内存 + 设备引用。已显式
+#   dma_free_coherent + put_device + kfree 后再返回。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序按序 fuzz=0。
+diff --git a/dma.c b/dma.c
+index a67880a9..a5c5b23a 100644
+--- a/dma.c
++++ b/dma.c
+@@ -825,6 +825,65 @@ int mt76_dma_rx_fill(struct mt76_dev *dev, struct mt76_queue *q,
+ 	return frames;
+ }
+ 
++struct mt76_dma_allocation {
++	struct device *dma_dev;
++	void *vaddr;
++	dma_addr_t dma_addr;
++	size_t size;
++};
++
++static void mt76_dma_free_coherent(void *data)
++{
++	struct mt76_dma_allocation *allocation = data;
++
++	dma_free_coherent(allocation->dma_dev, allocation->size,
++			  allocation->vaddr, allocation->dma_addr);
++	put_device(allocation->dma_dev);
++	kfree(allocation);
++}
++
++void *mt76_dma_alloc_coherent(struct mt76_dev *dev, size_t size,
++			      dma_addr_t *dma_handle, gfp_t gfp)
++{
++	struct mt76_dma_allocation *allocation;
++	int err;
++
++	if (dev->dma_dev == dev->dev)
++		return dmam_alloc_coherent(dev->dma_dev, size, dma_handle, gfp);
++
++	allocation = kmalloc(sizeof(*allocation), gfp);
++	if (!allocation)
++		return NULL;
++
++	allocation->dma_dev = get_device(dev->dma_dev);
++	allocation->size = size;
++	allocation->vaddr = dma_alloc_coherent(allocation->dma_dev, size,
++					       &allocation->dma_addr, gfp);
++	if (!allocation->vaddr) {
++		put_device(allocation->dma_dev);
++		kfree(allocation);
++		return NULL;
++	}
++
++	err = devm_add_action_or_reset(dev->dev, mt76_dma_free_coherent,
++				       allocation);
++	if (err) {
++		/* devres registration failed: release the coherent buffer and
++		 * the supplier reference taken above, otherwise both leak.
++		 */
++		dma_free_coherent(allocation->dma_dev, allocation->size,
++				  allocation->vaddr, allocation->dma_addr);
++		put_device(allocation->dma_dev);
++		kfree(allocation);
++		return NULL;
++	}
++
++	*dma_handle = allocation->dma_addr;
++
++	return allocation->vaddr;
++}
++EXPORT_SYMBOL_GPL(mt76_dma_alloc_coherent);
++
+ static int
+ mt76_dma_alloc_queue(struct mt76_dev *dev, struct mt76_queue *q,
+ 		     int idx, int n_desc, int bufsize,
+@@ -850,8 +909,8 @@ mt76_dma_alloc_queue(struct mt76_dev *dev, struct mt76_queue *q,
+ 	else
+ 		size = sizeof(struct mt76_desc);
+ 
+-	q->desc = dmam_alloc_coherent(dev->dma_dev, q->ndesc * size,
+-				      &q->desc_dma, GFP_KERNEL);
++	q->desc = mt76_dma_alloc_coherent(dev, q->ndesc * size,
++					  &q->desc_dma, GFP_KERNEL);
+ 	if (!q->desc)
+ 		return -ENOMEM;
+ 
+diff --git a/mt76.h b/mt76.h
+index f7c6e07c..b824d0ea 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -1330,6 +1330,8 @@ int mt76_register_device(struct mt76_dev *dev, bool vht,
+ 			 struct ieee80211_rate *rates, int n_rates);
+ void mt76_unregister_device(struct mt76_dev *dev);
+ void mt76_free_device(struct mt76_dev *dev);
++void *mt76_dma_alloc_coherent(struct mt76_dev *dev, size_t size,
++			      dma_addr_t *dma_handle, gfp_t gfp);
+ void mt76_reset_device(struct mt76_dev *dev);
+ void mt76_unregister_phy(struct mt76_phy *phy);
+ 
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index cbf1281a..6d7fa4d6 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -618,18 +618,18 @@ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 						 : MT7996_NPU_RX_RING_SIZE / 2
+ 						 : MT7996_TX_RING_SIZE;
+ 
+-		if (!dmam_alloc_coherent(dev->mt76.dma_dev, 256 * size,
+-					 &dev->npu_txd_addr[i], GFP_KERNEL))
++		if (!mt76_dma_alloc_coherent(&dev->mt76, 256 * size,
++					     &dev->npu_txd_addr[i], GFP_KERNEL))
+ 			return -ENOMEM;
+ 
+-		if (!dmam_alloc_coherent(dev->mt76.dma_dev, 256 * size,
+-					 &dev->npu_txd_addr[i + 1],
+-					 GFP_KERNEL))
++		if (!mt76_dma_alloc_coherent(&dev->mt76, 256 * size,
++					     &dev->npu_txd_addr[i + 1],
++					     GFP_KERNEL))
+ 			return -ENOMEM;
+ 
+-		if (!dmam_alloc_coherent(dev->mt76.dma_dev, 256 * 1024,
+-					 &dev->npu_txd_addr[i + 2],
+-					 GFP_KERNEL))
++		if (!mt76_dma_alloc_coherent(&dev->mt76, 256 * 1024,
++					     &dev->npu_txd_addr[i + 2],
++					     GFP_KERNEL))
+ 			return -ENOMEM;
+ 	}
+ 

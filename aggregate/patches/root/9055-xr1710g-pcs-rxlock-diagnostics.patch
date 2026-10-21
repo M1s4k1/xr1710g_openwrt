@@ -1,0 +1,149 @@
+diff --git a/target/linux/airoha/patches-6.18/9999-net-pcs-airoha-an7581-rx-lock-diagnostics.patch b/target/linux/airoha/patches-6.18/9999-net-pcs-airoha-an7581-rx-lock-diagnostics.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-net-pcs-airoha-an7581-rx-lock-diagnostics.patch
+@@ -0,0 +1,144 @@
++# Source: naoki66 原作 + orangeyoo patches/kernel/0923（XR1710G v1.6.1 **抑噪改造**），2026-09-12 P2 吸收
++# Upstream: n/a（作者自持）
++# Reason: 本仓 F93（PHY 宣告 10G、AN 落 2.5G）与 F81（#22397 LAN2 No FBCK Lock after 50
++#   calibration try）都卡在同一盲点：PCS 无 carrier 时分不清"对端没信号"还是"CDR 没锁"。
++#   本补丁在 AN7581 PCS 上加诊断：读 PCS/Base-R/AN/SigDet/FreqDet/reset 寄存器，区分
++#   `action=no-signal` 与 `action=cdr-reset` 并累计 resets 计数（RX-lock recovery 行为不变）。
++# ⚠ 抑噪版是**硬约束**：naoki66 早期版在每个 poll 都打印，空置 WAN 口约 2 行/秒刷屏，
++#   约 8 分钟冲空 logread 环形缓冲、挤掉 hostapd 历史（orangeyoo 自己把这条列为不稳定三因素
++#   之一）。本补丁为 v1.6.1 抑噪版：`no-signal` 与 AN down 每周期只打一次，`cdr-reset` 仍每次打印。
++#   内层命名 9999-net-pcs-… 排在 9992（JCPLL TCLVAR recal）/9994（USXGMII RX CDR crossing）**之后**，
++#   与二者在不同行区（9992 改 756/1935 区，9994 改 1483~1709 区，本项只加 1657 附近成员与
++#   2070 区函数）——**双向顺序实测终态哈希完全一致**（见 FIXES F119 实证段）。
++# 实证：对 kernel 6.18.44 真源干净应用（pcs-an7581.c offset -49、common.c offset 命中，fuzz 0）；
++#   与 9029/9038 内层同树双向顺序应用后三文件 sha256 一致。
++# 档位 #EXP：诊断输出改变日志行为，需实机按 orangeyoo 口径验收（见 FIXES F119）。
++# 判据：① 拔线：dmesg 中 `no-signal` 每周期 ≤1 条；② 插线但不 lock：出现 `action=cdr-reset`
++#   且 `resets=` 递增；③ 空置 WAN 跑 10 分钟：`AN down`/`no-signal` 各 ≤1 条、hostapd 历史不被冲掉。
++From: naoki66 <naoki66@qq.com>
++Subject: [PATCH] net: pcs: airoha: add AN7581 RX-lock diagnostics
++
++Some Gemtek XR1710G units report a valid copper-side link from the
++RTL8261BE while the AN7581 Ethernet PCS never reports USXGMII carrier.
++Add diagnostics for the relevant PCS, Base-R, autonegotiation, SigDet,
++FreqDet and reset registers. Distinguish a missing SerDes signal from a
++CDR recovery reset and track the reset count per PCS port. The existing
++RX-lock recovery behavior remains unchanged.
++
++XR1710G community modification (v1.6.1): report the "AN down" and
++"no-signal" diagnostics once per link/no-signal period instead of on
++every poll. On a bridge node whose WAN port stays idle the previous
++version flooded the kernel log at the ratelimit ceiling (about two
++lines per second), rotating every other kernel and hostapd message out
++of the log within minutes. The per-event "cdr-reset" diagnostic and the
++RX-lock recovery behavior itself are unchanged.
++
++Signed-off-by: naoki66 <naoki66@qq.com>
++---
++ drivers/net/pcs/airoha/pcs-airoha-common.c | 13 +++++++++++++
++ drivers/net/pcs/airoha/pcs-airoha.h | 4 ++++
++ drivers/net/pcs/airoha/pcs-an7581.c | 42 ++++++++++++++++++++++++++++++++++++++++--
++ 3 files changed, 57 insertions(+), 2 deletions(-)
++
++
++--- a/drivers/net/pcs/airoha/pcs-airoha-common.c
+++++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
++@@ -427,6 +427,19 @@
++ 	state->an_complete = !!(an_done & AIROHA_PCS_USXGMII_PCS_AN_COMPLETE);
++ 
++ 	phylink_decode_usxgmii_word(state, lpa);
+++
+++	/* Report link-down once per down period; an idle port with no
+++	 * cable would otherwise flood the kernel log on every poll.
+++	 */
+++	if (state->link) {
+++		priv->rxlock_link_down_reported[index] = false;
+++	} else if (data->rxlock_workaround &&
+++		   !priv->rxlock_link_down_reported[index]) {
+++		priv->rxlock_link_down_reported[index] = true;
+++		dev_info(priv->dev,
+++			 "port %d USXGMII AN down: stats0=%#010x stats2=%#010x\n",
+++			 index, lpa, an_done);
+++	}
++ }
++ 
++ static void airoha_pcs_get_state_10gbaser(struct airoha_pcs_priv *priv, int index,
++--- a/drivers/net/pcs/airoha/pcs-airoha.h
+++++ b/drivers/net/pcs/airoha/pcs-airoha.h
++@@ -1657,6 +1657,10 @@
++ 	struct reset_control *xfi_rst;
++ 	struct reset_control_bulk_data rsts[AIROHA_PCS_MAX_NUM_RSTS];
++ 
+++	u32 rxlock_reset_count[2];
+++	bool rxlock_link_down_reported[2];
+++	bool rxlock_no_signal_reported[2];
+++
++ 	struct phy *phy;
++ 
++ 	bool manual_rx_calib;
++--- a/drivers/net/pcs/airoha/pcs-an7581.c
+++++ b/drivers/net/pcs/airoha/pcs-an7581.c
++@@ -2116,9 +2116,34 @@
++ 	return count >= 4;
++ }
++ 
+++static void an7581_pcs_report_rxlock(struct airoha_pcs_priv *priv, int index,
+++				     u32 pcs_status, bool signal,
+++				     const char *action)
+++{
+++	struct airoha_pcs_maps *maps = &priv->maps[index];
+++	struct regmap *pcs_pma = priv->pcs_pma[index];
+++	u32 base_r = 0, an_status = 0, an_done = 0;
+++	u32 freqdet = 0, rst = 0;
+++
+++	regmap_read(maps->usxgmii_pcs,
+++		    AIROHA_PCS_USXGMII_BASE_R_10GB_T_PCS_STUS_1, &base_r);
+++	regmap_read(maps->usxgmii_pcs,
+++		    AIROHA_PCS_USXGMII_PCS_AN_STATS_0, &an_status);
+++	regmap_read(maps->usxgmii_pcs,
+++		    AIROHA_PCS_USXGMII_PCS_AN_STATS_2, &an_done);
+++	regmap_read(pcs_pma, AIROHA_PCS_PMA_RX_FREQDET, &freqdet);
+++	regmap_read(pcs_pma, AIROHA_PCS_PMA_SW_RST_SET, &rst);
+++
+++	dev_info_ratelimited(priv->dev,
+++			     "port %d USXGMII RX: pcs=%#010x base-r=%#010x an=%#010x an-done=%#010x sigdet=%u freqdet=%#010x rst=%#010x action=%s resets=%u\n",
+++			     index, pcs_status, base_r, an_status, an_done, signal,
+++			     freqdet, rst, action, priv->rxlock_reset_count[index]);
+++}
+++
++ int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv, int index)
++ {
++ 	struct airoha_pcs_maps *maps = &priv->maps[index];
+++	bool signal;
++ 	u32 val;
++ 
++ 	/* Check if PCS is UP or Down */
++@@ -2126,13 +2151,26 @@
++ 	if (val & AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_UP)
++ 		return 0;
++ 
++-	/* Validate if this is consistent with RX SigDet module */
++-	if (!an7581_pcs_have_rx_signal(priv, index))
+++	signal = an7581_pcs_have_rx_signal(priv, index);
+++	if (!signal) {
+++		/* An idle port with no peer reports no signal on every poll;
+++		 * keep the diagnostic value without flooding the kernel log.
+++		 */
+++		if (!priv->rxlock_no_signal_reported[index]) {
+++			priv->rxlock_no_signal_reported[index] = true;
+++			an7581_pcs_report_rxlock(priv, index, val, false,
+++						 "no-signal");
+++		}
++ 		return 0;
+++	}
+++
+++	priv->rxlock_no_signal_reported[index] = false;
++ 
++ 	/* If PCS is down but RX SigDet module detected signal,
++ 	 * trigger CDR reset.
++ 	 */
+++	priv->rxlock_reset_count[index]++;
+++	an7581_pcs_report_rxlock(priv, index, val, true, "cdr-reset");
++ 	an7581_pcs_cdr_reset(priv, index, PHY_INTERFACE_MODE_NA, false);
++ 
++ 	/* Report there is an error with Link Detection and we

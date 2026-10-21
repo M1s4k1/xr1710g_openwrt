@@ -1,0 +1,34 @@
+diff --git a/target/linux/airoha/patches-6.18/9991-net-airoha-no-carrier-rx-stats.patch b/target/linux/airoha/patches-6.18/9991-net-airoha-no-carrier-rx-stats.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9991-net-airoha-no-carrier-rx-stats.patch
+@@ -0,0 +1,29 @@
++# Source: XR1710G self-held kernel patch
++# Upstream: n/a (to be proposed once validated)
++# Reason: see docs/FIXES.md
++diff --git a/drivers/net/ethernet/airoha/airoha_eth.c b/drivers/net/ethernet/airoha/airoha_eth.c
++index 584fc3c..2f2fbf4 100644
++--- a/drivers/net/ethernet/airoha/airoha_eth.c
+++++ b/drivers/net/ethernet/airoha/airoha_eth.c
++@@ -2430,9 +2430,20 @@ static void airoha_dev_get_stats64(struct net_device *netdev,
++ 				   struct rtnl_link_stats64 *storage)
++ {
++ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+++	struct airoha_eth *eth = dev->eth;
++ 	unsigned int start;
++ 
++-	airoha_update_hw_stats(dev);
+++	/* Do not fold USXGMII link-state words counted during NO-CARRIER
+++	 * down/up retraining into netdev rx_errors/rx_dropped.  On no-carrier
+++	 * ports the MIB only accumulates pseudo-frame errors; clear them and
+++	 * leave the software stats untouched.  After carrier comes back the
+++	 * first stats poll starts from a clean MIB baseline.
+++	 */
+++	if (netif_carrier_ok(netdev))
+++		airoha_update_hw_stats(dev);
+++	else
+++		airoha_fe_set(eth, REG_FE_GDM_MIB_CLEAR(dev->port->id),
+++			      FE_GDM_MIB_RX_CLEAR_MASK | FE_GDM_MIB_TX_CLEAR_MASK);
++ 	do {
++ 		start = u64_stats_fetch_begin(&dev->stats.syncp);
++ 		storage->rx_packets = dev->stats.rx_ok_pkts;

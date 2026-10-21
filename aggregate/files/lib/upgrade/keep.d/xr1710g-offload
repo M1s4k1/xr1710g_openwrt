@@ -1,0 +1,9 @@
+# Runtime-written by the FlowSense VLAN/PPPoE offload switches (see
+# patches/root/9018-flowsense-offload-new-arch.patch): /etc/sysctl.d/14-vlan-offload.conf
+# and /etc/sysctl.d/15-pppoe-offload.conf are created only when the user toggles the
+# corresponding switch, and the upstream keep list (base-files-essential) only keeps
+# /etc/sysctl.conf -- so a "keep settings" sysupgrade silently dropped the user's
+# choice and reverted the bridge filtering policy to the image default.
+# F104-adjacent (2026-09-12 ecosystem sweep, from yahuisme/w1700k-* keep.d model).
+/etc/sysctl.d/14-vlan-offload.conf
+/etc/sysctl.d/15-pppoe-offload.conf

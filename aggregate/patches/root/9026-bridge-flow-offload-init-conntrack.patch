@@ -1,0 +1,32 @@
+diff --git a/target/linux/generic/pending-6.18/675-04-netfilter-nft_flow_offload-bridge-init-conntrack.patch b/target/linux/generic/pending-6.18/675-04-netfilter-nft_flow_offload-bridge-init-conntrack.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/generic/pending-6.18/675-04-netfilter-nft_flow_offload-bridge-init-conntrack.patch
+@@ -0,0 +1,27 @@
++# Source: XR1710G self-held kernel patch
++# Upstream: n/a (to be proposed once validated)
++# Reason: see docs/FIXES.md
++diff --git a/net/netfilter/nft_flow_offload.c b/net/netfilter/nft_flow_offload.c
++index 5cf9ef1..1ce8632 100644
++--- a/net/netfilter/nft_flow_offload.c
+++++ b/net/netfilter/nft_flow_offload.c
++@@ -216,7 +216,8 @@ static int nft_flow_offload_init(const struct nft_ctx *ctx,
++ 
++ 	priv->flowtable = flowtable;
++ 
++-	return nf_ct_netns_get(ctx->net, ctx->family);
+++	return nf_ct_netns_get(ctx->net,
+++			       ctx->family == NFPROTO_BRIDGE ? NFPROTO_INET : ctx->family);
++ }
++ 
++ static void nft_flow_offload_deactivate(const struct nft_ctx *ctx,
++@@ -239,7 +240,8 @@ static void nft_flow_offload_activate(const struct nft_ctx *ctx,
++ static void nft_flow_offload_destroy(const struct nft_ctx *ctx,
++ 				     const struct nft_expr *expr)
++ {
++-	nf_ct_netns_put(ctx->net, ctx->family);
+++	nf_ct_netns_put(ctx->net,
+++			ctx->family == NFPROTO_BRIDGE ? NFPROTO_INET : ctx->family);
++ }
++ 
++ static int nft_flow_offload_dump(struct sk_buff *skb,

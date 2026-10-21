@@ -1,0 +1,83 @@
+# Source: hurryman2212/OpenW1700k-test @offload-oc commit 96247057 的 crypto.mk 部分
+# Reason: 9054 的内核补丁新增 eip93-fallback.c 并接入其 Makefile → 产出第二只模块 fallback.ko；
+#   crypto 核心亦新增 crypt-benchmark.ko 与 crypto/fallback.ko。而 OpenWrt modules/crypto.mk 无对应
+#   包定义 → 打包阶段报 "Package kmod-crypto-hw-eip93 is missing dependencies for the following
+#   libraries: fallback.ko" → modules/crypto.mk:549 Error 1（CI run 34669202875 实测，实验档唯一失败点）。
+# 补齐四处：① 新增 KernelPackage/crypto-benchmark；② 新增 KernelPackage/crypto-dynamic-fallback；
+#   ③ kmod-crypto-hw-eip93 加 +kmod-crypto-dynamic-fallback；
+#   ④ kmod-crypto-test 加 +kmod-crypto-benchmark（助手已从 tcrypt 移出）。
+# 更正（F125，2026-09-12 CI run 34687410355 实测）：**不删** KCONFIG 里的两个静态阈值。
+#   作者 commit 96247057 把上游 4 行 KCONFIG 删成 2 行，但那是按其自身树的改法；
+#   在本仓基线上这两个符号是「int + 有 prompt」，删除后内核 kconfig 报未决符号并使构建失败：
+#     Support for EIP93 crypto HW accelerators (CRYPTO_DEV_EIP93) [M/n/y/?] m
+#     Max skcipher software fallback length (CRYPTO_DEV_EIP93_GENERIC_SW_MAX_LEN) [256] (NEW)
+#     make[8]: *** [scripts/kconfig/Makefile:85: syncconfig] Error 1
+#   已实测：openwrt/openwrt master（blob c7b782e9）该段原生即 4 行；驱动 eip93-cipher.c:186
+#   仍读取 GENERIC_SW_MAX_LEN。故本补丁只加 +kmod-crypto-dynamic-fallback，KCONFIG 原样保留。
+#   验证：对 master 真实 crypto.mk `git apply --check` 通过，应用后 KCONFIG 4 行完整。
+# 档位 #EXP：本补丁是 9054 的**打包侧配套**，必须同档。
+# 判据：实验档构建通过；`apk info -R kmod-crypto-hw-eip93` 出现 kmod-crypto-dynamic-fallback。
+
+diff --git a/package/kernel/linux/modules/crypto.mk b/package/kernel/linux/modules/crypto.mk
+--- a/package/kernel/linux/modules/crypto.mk
++++ b/package/kernel/linux/modules/crypto.mk
+@@ -78,6 +78,16 @@
+ $(eval $(call KernelPackage,crypto-authenc))
+ 
+ 
++define KernelPackage/crypto-benchmark
++  TITLE:=CryptoAPI benchmark helper library
++  KCONFIG:=CONFIG_CRYPTO_BENCHMARK_LIB
++  FILES:=$(LINUX_DIR)/crypto/crypt-benchmark.ko
++  $(call AddDepends/crypto)
++endef
++
++$(eval $(call KernelPackage,crypto-benchmark))
++
++
+ define KernelPackage/crypto-blake2b
+   TITLE:=Support for BLAKE2b cryptographic hash function (RFC 7693)
+   DEPENDS:=+kmod-crypto-hash
+@@ -214,6 +224,17 @@
+ $(eval $(call KernelPackage,crypto-des))
+ 
+ 
++define KernelPackage/crypto-dynamic-fallback
++  TITLE:=Dynamic CryptoAPI software fallback
++  DEPENDS:=+kmod-crypto-benchmark
++  KCONFIG:=CONFIG_CRYPTO_DYNAMIC_FALLBACK
++  FILES:=$(LINUX_DIR)/crypto/fallback.ko
++  $(call AddDepends/crypto)
++endef
++
++$(eval $(call KernelPackage,crypto-dynamic-fallback))
++
++
+ define KernelPackage/crypto-ecb
+   TITLE:=Electronic CodeBook CryptoAPI module
+   DEPENDS:=+kmod-crypto-manager
+@@ -525,15 +546,16 @@
+   TITLE:=MTK EIP93 crypto module
+   DEPENDS:=@(TARGET_ramips_mt7621||TARGET_airoha) \
+ 	+kmod-crypto-authenc \
++	+kmod-crypto-dynamic-fallback \
+ 	+kmod-crypto-des \
+ 	+kmod-crypto-md5 \
+ 	+kmod-crypto-sha1 \
+ 	+kmod-crypto-sha256
+   KCONFIG:= \
+ 	CONFIG_CRYPTO_HW=y \
+ 	CONFIG_CRYPTO_DEV_EIP93 \
+ 	CONFIG_CRYPTO_DEV_EIP93_GENERIC_SW_MAX_LEN=256 \
+ 	CONFIG_CRYPTO_DEV_EIP93_AES_128_SW_MAX_LEN=512
+   FILES:=$(LINUX_DIR)/drivers/crypto/inside-secure/eip93/crypto-hw-eip93.ko
+   AUTOLOAD:=$(call AutoLoad,09,crypto-hw-eip93)
+   $(call AddDepends/crypto)
+@@ -1072,6 +1092,7 @@
+ 
+ define KernelPackage/crypto-test
+   TITLE:=Test CryptoAPI module
++  DEPENDS:=+kmod-crypto-benchmark
+   KCONFIG:=CONFIG_CRYPTO_TEST
+   FILES:=$(LINUX_DIR)/crypto/tcrypt.ko
+   $(call AddDepends/crypto,+kmod-crypto-manager)

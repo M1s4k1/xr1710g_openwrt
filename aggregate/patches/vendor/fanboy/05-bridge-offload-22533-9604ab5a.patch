@@ -1,0 +1,227 @@
+From 9604ab5a4d7b514d58148b33c7ef4990cb325314 Mon Sep 17 00:00:00 2001
+From: Ryan Chen <rchen14b@gmail.com>
+Date: Mon, 23 Mar 2026 16:23:43 -0500
+Subject: [PATCH] airoha: enable bridge hw offload for AN7581 target
+
+Enable L2 bridge hardware flow offloading on AN7581 using the
+bridge-family flowtable from the 675 patch series (no kmod-br-netfilter).
+
+Add bridge-hw-offload package:
+  - Adds an iface hotplug script (51-bridge-hw-offload) that fires on
+    ifup of the lan interface and waits for bridge membership to settle
+    instead of a fixed sleep (polls br-lan/brif every 5s until a
+    non-empty port set is stable, 120s cap), allowing late-joining WiFi
+    AP interfaces (hostapd startup, DFS CAC) to join br-lan before
+    bridge port detection. Uses flock to serialize concurrent events.
+  - Detects bridge member ports dynamically from /sys/class/net/br-lan/brif
+  - Generates a bridge-family nftables flowtable and forward-chain rule in
+    /usr/share/nftables.d/ruleset-post/30-bridge-offload.nft
+  - Triggers fw4 reload to apply the ruleset-post include
+  - DEPENDS: kmod-nft-bridge, firewall4
+
+The bridge-family flowtable itself is provided by kmod-nft-offload
+(nf_flow_table_inet.ko), which registers the NFPROTO_BRIDGE flowtable
+type per the 675 patch series; it is pulled in transitively via
+firewall4, so no separate kmod is needed.
+
+Add bridge-hw-offload to DEFAULT_PACKAGES in target.mk so it is
+included in all images.
+
+Assisted-By: OpenCode
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+---
+ .../network/config/bridge-hw-offload/Makefile | 39 ++++++++++++
+ .../etc/hotplug.d/iface/51-bridge-hw-offload  | 27 +++++++++
+ .../files/etc/init.d/bridge-hw-offload        | 25 ++++++++
+ .../share/bridge-hw-offload/apply-rules.sh    | 60 +++++++++++++++++++
+ target/linux/airoha/an7581/target.mk          |  3 +-
+ 5 files changed, 140 insertions(+), 1 deletion(-)
+ create mode 100644 package/network/config/bridge-hw-offload/Makefile
+ create mode 100755 package/network/config/bridge-hw-offload/files/etc/hotplug.d/iface/51-bridge-hw-offload
+ create mode 100755 package/network/config/bridge-hw-offload/files/etc/init.d/bridge-hw-offload
+ create mode 100755 package/network/config/bridge-hw-offload/files/usr/share/bridge-hw-offload/apply-rules.sh
+
+diff --git a/package/network/config/bridge-hw-offload/Makefile b/package/network/config/bridge-hw-offload/Makefile
+new file mode 100644
+index 00000000000000..3e9003f18dd0b2
+--- /dev/null
++++ b/package/network/config/bridge-hw-offload/Makefile
+@@ -0,0 +1,39 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=bridge-hw-offload
++PKG_VERSION:=1.0
++PKG_RELEASE:=1
++PKG_LICENSE:=GPL-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/bridge-hw-offload
++  SECTION:=net
++  CATEGORY:=Network
++  SUBMENU:=Firewall
++  TITLE:=Bridge hardware flow offloading
++  DEPENDS:=+kmod-nft-bridge +firewall4
++endef
++
++define Package/bridge-hw-offload/description
++  Adds nftables bridge flowtable offloading rules after firewall4
++  initialization. Detects bridge member ports dynamically and creates
++  a bridge-family flowtable with hardware offload support.
++endef
++
++define Build/Configure
++	true
++endef
++
++define Build/Compile
++	true
++endef
++
++define Package/bridge-hw-offload/install
++	$(INSTALL_DIR) $(1)/usr/share/bridge-hw-offload $(1)/etc/init.d $(1)/etc/hotplug.d/iface
++	$(INSTALL_BIN) ./files/usr/share/bridge-hw-offload/apply-rules.sh $(1)/usr/share/bridge-hw-offload/apply-rules.sh
++	$(INSTALL_BIN) ./files/etc/init.d/bridge-hw-offload $(1)/etc/init.d/bridge-hw-offload
++	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/51-bridge-hw-offload $(1)/etc/hotplug.d/iface/51-bridge-hw-offload
++endef
++
++$(eval $(call BuildPackage,bridge-hw-offload))
+diff --git a/package/network/config/bridge-hw-offload/files/etc/hotplug.d/iface/51-bridge-hw-offload b/package/network/config/bridge-hw-offload/files/etc/hotplug.d/iface/51-bridge-hw-offload
+new file mode 100755
+index 00000000000000..9bcade38bf2b8e
+--- /dev/null
++++ b/package/network/config/bridge-hw-offload/files/etc/hotplug.d/iface/51-bridge-hw-offload
+@@ -0,0 +1,27 @@
++#!/bin/sh
++
++[ "$ACTION" = ifup ] || exit 0
++[ "$INTERFACE" = lan ] || exit 0
++
++(
++	exec 9>/var/lock/bridge-hw-offload.lock
++	flock -n 9 || exit 0
++	# Wait for bridge membership to settle instead of a fixed sleep:
++	# wireless AP interfaces may join br-lan long after lan ifup
++	# (hostapd startup, DFS CAC). Apply once the port set is stable.
++	prev=""; stable=0; waited=0
++	while [ "$waited" -lt 120 ]; do
++		cur=$(ls /sys/class/net/br-lan/brif 2>/dev/null | sort | tr '\n' ' ')
++		if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
++			stable=$((stable + 1))
++			[ "$stable" -ge 3 ] && break
++		else
++			stable=0
++		fi
++		prev="$cur"
++		sleep 5; waited=$((waited + 5))
++	done
++	/usr/share/bridge-hw-offload/apply-rules.sh
++) &
++
++exit 0
+diff --git a/package/network/config/bridge-hw-offload/files/etc/init.d/bridge-hw-offload b/package/network/config/bridge-hw-offload/files/etc/init.d/bridge-hw-offload
+new file mode 100755
+index 00000000000000..81f5f341c9cbaa
+--- /dev/null
++++ b/package/network/config/bridge-hw-offload/files/etc/init.d/bridge-hw-offload
+@@ -0,0 +1,25 @@
++#!/bin/sh /etc/rc.common
++# Regenerate bridge HW-offload rules when firewall config changes,
++# so toggling flow_offloading_hw takes effect without reboot.
++#
++# Boot-time setup is still handled by the delayed lan-ifup hotplug
++# script (allows WiFi AP interfaces to join br-lan first); this service
++# exists so procd notifies us of firewall UCI changes (start_service
++# registers the service and its triggers below with procd).
++
++USE_PROCD=1
++START=21
++
++start_service() {
++	procd_openinstance
++	procd_set_param command /bin/true
++	procd_closeinstance
++}
++
++service_triggers() {
++	procd_add_reload_trigger firewall
++}
++
++reload_service() {
++	/usr/share/bridge-hw-offload/apply-rules.sh
++}
+diff --git a/package/network/config/bridge-hw-offload/files/usr/share/bridge-hw-offload/apply-rules.sh b/package/network/config/bridge-hw-offload/files/usr/share/bridge-hw-offload/apply-rules.sh
+new file mode 100755
+index 00000000000000..2e9a963178f48a
+--- /dev/null
++++ b/package/network/config/bridge-hw-offload/files/usr/share/bridge-hw-offload/apply-rules.sh
+@@ -0,0 +1,60 @@
++#!/bin/sh
++# Bridge flow offloading rule generator
++# Detects bridge member ports and writes a persistent .nft file
++# that fw4 includes via its ruleset-post mechanism.
++#
++# After writing the file, triggers fw4 reload to apply the rules.
++
++BRIDGE="${1:-br-lan}"
++RULES_DIR="/usr/share/nftables.d/ruleset-post"
++RULES_FILE="${RULES_DIR}/30-bridge-offload.nft"
++FLOWTABLE="br_offload"
++
++detect_bridge_ports() {
++    local brif_dir="/sys/class/net/${BRIDGE}/brif"
++    [ -d "$brif_dir" ] || return 1
++    local ports=""
++    for port_dir in "$brif_dir"/*; do
++        [ -d "$port_dir" ] || continue
++        ports="${ports:+${ports}, }$(basename "$port_dir")"
++    done
++    [ -n "$ports" ] && echo "$ports"
++}
++
++main() {
++    # Only use the NPU/hardware path when fw4 hardware offload is enabled.
++    if [ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" != "1" ]; then
++        rm -f "$RULES_FILE"
++        nft delete table bridge fw4 >/dev/null 2>&1
++        logger -t bridge-hw-offload "flow_offloading_hw not set, hardware offload disabled"
++    else
++        local devices
++        devices=$(detect_bridge_ports)
++        if [ -z "$devices" ]; then
++            logger -t bridge-hw-offload "No bridge ports found for ${BRIDGE}, skipping"
++            return 1
++        fi
++
++        mkdir -p "$RULES_DIR"
++        cat > "$RULES_FILE" <<EOF
++destroy table bridge fw4
++
++table bridge fw4 {
++    flowtable ${FLOWTABLE} {
++        hook ingress priority 0; devices = { ${devices} }; flags offload;
++    }
++
++    chain forward {
++        type filter hook forward priority 0; policy accept;
++        meta l4proto { tcp, udp } flow offload @${FLOWTABLE}
++    }
++}
++EOF
++        logger -t bridge-hw-offload "hardware offload enabled for ${devices}"
++    fi
++
++    # Reload fw4 so it picks up our ruleset-post include
++    /etc/init.d/firewall reload >/dev/null 2>&1 &
++}
++
++main
+diff --git a/target/linux/airoha/an7581/target.mk b/target/linux/airoha/an7581/target.mk
+index 3d0cee97d4..15c942f678 100644
+--- a/target/linux/airoha/an7581/target.mk
++++ b/target/linux/airoha/an7581/target.mk
+@@ -13,3 +13,4 @@ define Target/Description
+ 	Build firmware images for Airoha an7581 ARM based boards.
+ endef
+ 
++DEFAULT_PACKAGES += bridge-hw-offload

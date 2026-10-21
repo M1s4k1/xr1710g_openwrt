@@ -1,0 +1,49 @@
+# Source: OpenWRT-fanboy/mt76-firmware@01367e60db433534ad0aa3d3b6c886de8cb7d44c
+#   （fanboy 提交 f59bad1c5「09-01-26 mt76 plus 20260721 firmware」对 package/kernel/mt76/Makefile
+#    的 3 行替换；2026-09-14 F161 换代落地，default 档）
+# Upstream: n/a —— 上游 openwrt 包 pin 的是 openwrt/mt76@be5ce7910521492d4a2e4ce7ee3843680a46c047；
+#   本项改指 fanboy fork 的**快进式**固件提交 = be5ce791 + **恰好 1 个提交**
+#   （`01367e6 new mt7996 family firmware`，`22 files changed, 0 insertions(+), 0 deletions(-)`，
+#    22 文件全是 firmware/mt7996/*.bin）⇒ 换代不改任何一行驱动源码。
+# Reason: mt7996 家族固件换代。按 F161 取证（research-20260912/inner/F161-EVIDENCE.md §3.1）逐字节口径：
+#   生产固件净 **−65 124 B**（mt7996_wm.bin +9 728 / mt7996_wm_233.bin +10 944 / mt7992_wm.bin +3 444 /
+#   mt7992_wm_23.bin +3 540 / mt7996_wa*.bin +64×2 / mt7992_dsp*.bin +4×2 / mt7990_wm.bin −92 916 ——
+#   mt7990 非本机芯片），另有 *_rom_patch*.bin ×5 与 mt7992_wa*.bin ×2 属「同大小、内容变」；
+#   新增 ≈8.8 MB 的 *_wm_tm*.bin 是**产线测试模式**固件，驱动 MT7996/92/90_FIRMWARE_* 常量全部指向
+#   非 _tm 文件、全树 `grep '_tm\.bin'` 零引用 ⇒ 不进运行时路径。
+#   **为何不是 fanboy 原样的 `PKG_MIRROR_HASH:=skip`**：本仓曾以「fork + hash=skip，违反锁源铁律」
+#   **否决**同一换代（见 patches/ORDER 的 pending：vendor/fanboy/13「# 否决（fork + PKG_MIRROR_HASH=skip，
+#   违反锁源铁律）」）。F161 决策点① 已解：用 OpenWrt 官方 scripts/dl_github_archive.py 端到端算出
+#   真实 sha256（先对**已知答案**复现自检——现行 pin 得 d1d0f758… 与 Makefile 逐字符相同；负对照
+#   换用错 hash 则 exit 1），故本项**替掉 skip 填真实 hash**，锁源铁律成立，且顺带把下载路径从
+#   `rawgit`（整仓 clone + git archive + 无哈希校验）切回 `github_archive`（提交前后双向 sha256 校验）。
+#   注：`skip` 不只是"不校验"——它让 `dl_github_archive.py._init_hasher()` 的长度硬校验抛错，
+#   ⇒ 必然回落 rawgit（F161-EVIDENCE §7.4）。
+#   **PKG_SOURCE_DATE 保持 2026-09-01 不变**：PKG_MIRROR_HASH 经 SUBDIR
+#   （`<PKG_NAME>-<点化 DATE>~<sha 前 8 位>`）依赖它，改 DATE 必须重算 hash（同 §7.5 警告）。
+# 前置：F163 已把 scripts/verify-copy-patches.sh 的 mt76 分支从硬编码 `github.com/openwrt/mt76`
+#   改为**从包 Makefile 读 PKG_SOURCE_URL/VERSION**（否则换代后该 URL 必 404，而脚本按
+#   「下载失败 = ⚠ 未校验、不红」静默降级 ⇒ 32 个 mt76 包补丁长期失去校验而 2h cron 仍绿）。
+# 判据（换代前已全绿，见 F161 行）：① `01367e60` 可下载自证且 `be5ce791` 是其直接祖先、rev-list 恰 1；
+#   ② 32/32 包补丁对 01367e60 按构建语义 `patch -f -p1` 复跑成功、0 FAILED、0 .rej，且与 be5ce791 对照
+#   逐条同偏移/同模糊命中；③ 差异面 22 文件 / 0 行源码增删。**CI 绿不能代替实机**：
+#   实机回归 docs/DEVICE-VALIDATION.md §7 V7.0–V7.6（dmesg 固件版本行 + 三频吞吐 + NPU 长稳 + 冷启动 ×N）。
+diff --git a/package/kernel/mt76/Makefile b/package/kernel/mt76/Makefile
+index b379ad09a..0ce7f8826 100644
+--- a/package/kernel/mt76/Makefile
++++ b/package/kernel/mt76/Makefile
+@@ -6,11 +6,11 @@ PKG_RELEASE=1
+ PKG_LICENSE:=BSD-3-Clause-Clear
+ PKG_LICENSE_FILES:=
+ 
+-PKG_SOURCE_URL:=https://github.com/openwrt/mt76
++PKG_SOURCE_URL:=https://github.com/OpenWRT-fanboy/mt76-firmware
+ PKG_SOURCE_PROTO:=git
+ PKG_SOURCE_DATE:=2026-09-01
+-PKG_SOURCE_VERSION:=be5ce7910521492d4a2e4ce7ee3843680a46c047
+-PKG_MIRROR_HASH:=d1d0f7588c5b9ceafcac341ce19dd206ed9ec106847e672ab77e48bacb57f81a
++PKG_SOURCE_VERSION:=01367e60db433534ad0aa3d3b6c886de8cb7d44c
++PKG_MIRROR_HASH:=983ba810fd6947c9c05bc3ce79ff8e383255115cd0273837d9f4a93f3cbd04da
+ 
+ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
+ PKG_USE_NINJA:=0

@@ -1,0 +1,82 @@
+# F161 mt76 固件换代 —— 设备侧字节指纹核对表
+#
+# 用途：刷入换代固件后，在设备上算 /lib/firmware/mediatek/mt7996/<f> 的 sha256，
+#       与本表 new 列逐字符比对（不是「看起来正常」，是字节相同）。
+# 生成：tmp/f161hash/ 的复刻流程（旧=openwrt/mt76@be5ce791，新=OpenWRT-fanboy/mt76-firmware@01367e60）
+# 判据：★ = 驱动会加载的生产固件；其余为其它芯片变体 / 驱动不加载的测试模式 _tm
+#
+文件                            ★  old sha256                                                        new sha256                                                        状态
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+mt7990_eeprom.bin                efacee4f35bf66787af3578b7f0754f3ecc4c9002c39910e24934373951dc11d  efacee4f35bf66787af3578b7f0754f3ecc4c9002c39910e24934373951dc11d  同（换代不变）
+mt7990_eeprom_2i5i.bin           ae8f5fbad39959d0a94df5ad2ce93a41962b948d4d61beb1774acbb27734b799  ae8f5fbad39959d0a94df5ad2ce93a41962b948d4d61beb1774acbb27734b799  同（换代不变）
+mt7990_rom_patch.bin             e3ca02567e703a224719dd80c8f1d0c47642d4bede0c4501249ccf7b7602d973  d406140359b085efee0576b94e93a532fcd9edd802d867c99a0bed08abd84fca  **内容变**
+mt7990_wm.bin                    b35b8c0737b55bd176a7e0142ec902c6edcfee1731b9ae6b2b7ecb557c2637c3  e77b2015ea95f656dc6b9343b658fb4c154d1bbe13ef52fdeb7e52f84f95eed5  **内容变**  大小 1355148→1262232 (-92916)
+mt7990_wm_tm.bin                 (无)                                                               b0950be095e9b2fe9f58c1cbb7a66738e4f564a05d46740d7df143bc209fbfb8  **仅新** （1331160 B）
+mt7992_dsp.bin                   1a90a88c0da90dc8e4259472b91cb0e1cb37ba131652da0530c8af6fe7b1e540  0c69fa5ccd4b738666ae6a27c10430257c13b710d5af84cbc721cca5cf5c8535  **内容变**  大小 63568→63572 (+4)
+mt7992_dsp_23.bin                43f2db9152dd9aaeb9c27848215445ee8a48978fb2d2f15b13a3af5ecb77e631  a3bb93081d27b1f1d5334ebe67b672fd65b29f2bc4757d8f5495e4be9d43e7f8  **内容变**  大小 63568→63572 (+4)
+mt7992_eeprom.bin                9dde8b84b9c2308d264a2aee5a1a87fe6549884226c4e44047bdb48d0a2257f3  9dde8b84b9c2308d264a2aee5a1a87fe6549884226c4e44047bdb48d0a2257f3  同（换代不变）
+mt7992_eeprom_23.bin             ccc92839a805320e5f3708dcd9559bbfe5f741b4e8628f384e9f500aaf372275  ccc92839a805320e5f3708dcd9559bbfe5f741b4e8628f384e9f500aaf372275  同（换代不变）
+mt7992_eeprom_23_2i5i.bin        f88ad725f82aa54269eba65f8e10b7eb9d652a3da46edde53c6a48f3960c7376  f88ad725f82aa54269eba65f8e10b7eb9d652a3da46edde53c6a48f3960c7376  同（换代不变）
+mt7992_eeprom_2i5e.bin           898439862ecc00a00a0896d7327f319e425e04e466937434728966b2d68c22a8  898439862ecc00a00a0896d7327f319e425e04e466937434728966b2d68c22a8  同（换代不变）
+mt7992_eeprom_2i5i.bin           454ce57758188e1aab934863d0a67a64b66ac88c509c41c1283f2d226fb2fd48  454ce57758188e1aab934863d0a67a64b66ac88c509c41c1283f2d226fb2fd48  同（换代不变）
+mt7992_rom_patch.bin             836ab41cb5c7266fc60e16c5312c9726a1bf3ab8e1cbd50fb8a8d340236b0e29  98572053d696db4e79cf8f4f4dab59066b6b7a490ce645c0732f80862615e6e2  **内容变**
+mt7992_rom_patch_23.bin          1577fb68e31bb6535ec7d5757fa07d0df5aa0c0024f6fa9d2da1423b3ca73248  2f197faf107ed5f339d98416816726910ed1aa1c58664e8d7846a53844b08544  **内容变**
+mt7992_wa.bin                    5c982d6c7f7346096d165374ce70c21beb2fc1a7d97d7ae1b837dfbe887c3f78  ef1344faec8cfec050db5d8491f2dacf57dac77a917022c0943359cd45e6d6e0  **内容变**
+mt7992_wa_23.bin                 667a345e351d1a3c3d0d34989794aa8c615e478dc6b785a1fe5f9aee1f587c20  ad0aa27c43ca8cbe1b4b2203131c7d73dacfe5cdcec2145b5f865c2a0c34bd0f  **内容变**
+mt7992_wm.bin                    8df1e82b58a64df7c693af01849a1a961f9f8a34cd3273512b771c00b8f9293f  f778918f76a989d7b0af6538842a68e34004d6674f35de2cc6c7a6c00c9f9890  **内容变**  大小 1745440→1748884 (+3444)
+mt7992_wm_23.bin                 74dc06194134a79e30d8ebd1d1fbe0a62f1deabda9efa592a4a0d32743811381  4a0b13154276765464fa8580d04ce8b72219e86c9e706e683b65d7cf9a9ab8c6  **内容变**  大小 1704688→1708228 (+3540)
+mt7992_wm_tm.bin                 (无)                                                               eac8b1e4ad590c21f47106453fd77adeea06877ee91578ba5311d94e1b5173c0  **仅新** （1758900 B）
+mt7992_wm_tm_23.bin              (无)                                                               187448a5d2a0e78477e9d30a49998d325faf215425ae5a4bc01a4103b309b7e8  **仅新** （1718260 B）
+mt7996_dsp.bin                ★  c2d9e048cc1ce29d472f5bb342445a41bdb2d11c5c904bc904a498ae60ece3f7  7c4d3854fbac6a09b511a5894dbad84c1a09327d98732ddf078fe62a472d228d  **内容变**
+mt7996_eeprom.bin                86611acc8560d05a8e18780838cf8400e82ba313cdc9329d0097422d591199d6  86611acc8560d05a8e18780838cf8400e82ba313cdc9329d0097422d591199d6  同（换代不变）
+mt7996_eeprom_233.bin            d4e2c032657c35d79f651d7e3b6af2e05f6a498228be31394d032640851a9643  d4e2c032657c35d79f651d7e3b6af2e05f6a498228be31394d032640851a9643  同（换代不变）
+mt7996_eeprom_233_2i5i6i.bin     d4e2c032657c35d79f651d7e3b6af2e05f6a498228be31394d032640851a9643  d4e2c032657c35d79f651d7e3b6af2e05f6a498228be31394d032640851a9643  同（换代不变）
+mt7996_eeprom_2i5i6i.bin         22f5caa4400963ecacb840d8acb7c004260b567709b1c09c6e2309a6050d9f28  22f5caa4400963ecacb840d8acb7c004260b567709b1c09c6e2309a6050d9f28  同（换代不变）
+mt7996_rom_patch.bin          ★  b0e5d7794d5101268a6d4bcba31bef8d8b908104ec4d7bec439b95d5fb888f3f  12e3b4cbb49bd175f8ef9be82f2bb36af47c441a645cc0be790b1f979fbae400  **内容变**
+mt7996_rom_patch_233.bin      ★  14220455d9975e0ee901f4c905bf0eb2aeaf767c6f5443169a551af44c22e72b  86ff6a4a550bee662faf41031815484039bc1a0ee1b90e203ed32af4548b1fb0  **内容变**
+mt7996_wa.bin                 ★  9df39dc262aec716594d2a46a3b6d6da58afbb85a015c2f94bf467db7a764d12  06106c918866c7ae3da47b27223da17030212a1a4adcb5c23871325291d06448  **内容变**  大小 510000→510064 (+64)
+mt7996_wa_233.bin             ★  b54558552ee4d70794c6772e90cfdcce9d77c9feaaf5ab83e215151c8595e07d  6435010a194bdf26fcb390139236f928b17092b9c8eb63bd56b7cd61e2bb5f09  **内容变**  大小 510000→510064 (+64)
+mt7996_wm.bin                 ★  ba5b800e560a7940f1c51db0f99ab4dc249389f6e1a9e4e863f62ff28cc5ff50  99020e57ff91fdee09b833f9d35f97ff70722d0ef32fa8b02f70c8d3c6f95592  **内容变**  大小 2656440→2666168 (+9728)
+mt7996_wm_233.bin             ★  b41bcbdd69306885c0d94783e0fe25956137489970ef958198d6eec5ef274d72  fa51dcf25e80412ff2813600d5606549ee2baa77b4d116e881b19454f20b9506  **内容变**  大小 2681656→2692600 (+10944)
+mt7996_wm_tm.bin                 (无)                                                               edc25978037153b213c9c071f9b87090897fba2ace0e30083258c1ce80cf6d5a  **仅新** （2159096 B）
+mt7996_wm_tm_233.bin             (无)                                                               41720395d5cb69188ac3f3af233f61042ba479f46eb2a8837ebba75c3f543cb4  **仅新** （2167096 B）
+
+## 驱动加载的文件（mt7996/mt7996.h:47-55）
+  mt7996_wa.bin              **变**
+  mt7996_wm.bin              **变**
+  mt7996_dsp.bin             **变**
+  mt7996_rom_patch.bin       **变**
+  mt7996_wa_233.bin          **变**
+  mt7996_wm_233.bin          **变**
+  mt7996_rom_patch_233.bin   **变**
+
+## 驱动不加载（Makefile 与驱动源码对 _tm 零引用，不进镜像）
+  mt7990_wm_tm.bin           新增 1331160 B
+  mt7992_wm_tm.bin           新增 1758900 B
+  mt7992_wm_tm_23.bin        新增 1718260 B
+  mt7996_wm_tm.bin           新增 2159096 B
+  mt7996_wm_tm_233.bin       新增 2167096 B
+
+## 核对命令（设备上）
+  cd /lib/firmware/mediatek/mt7996
+  sha256sum mt7996_wm.bin mt7996_wm_233.bin mt7996_rom_patch.bin mt7996_rom_patch_233.bin mt7996_wa.bin mt7996_wa_233.bin mt7996_dsp.bin
+  # _tm 文件应【不存在】于设备：ls mt7996*_tm*.bin → No such file
+
+## 固件内嵌 build_date —— dmesg『Build Time:』应逐字匹配（最硬的实机判据）
+#
+# 来源：struct mt76_connac2_fw_trailer（mt76_connac_mcu.h:176-188，36 B）在文件尾部；
+#       驱动 mt7996/mcu.c:3708 打印 '%s Firmware Version: %.10s, Build Time: %.15s'。
+#       ⇒ 换代后 dmesg 必须出现 new 列的字面串；old 列是换代前的值（用于确认确实换了）。
+#
+文件                      old Build Time    new Build Time    
+--------------------------------------------------------------
+mt7996_wm.bin           20260311120504    20260721003035    
+mt7996_wm_233.bin       20260311120702    20260721003609    
+mt7996_wa.bin           20260311120325    20260721002917    
+mt7996_wa_233.bin       20260311120618    20260721003453    
+mt7996_dsp.bin          20260311120415    20260721002848    
+
+# 验收命令（设备上，换前后各跑一次）：
+#   dmesg | grep -E 'Firmware Version'
+#   换代后应含：Build Time: 20260721003035（WM 444 变体）或 20260721003609（WM 233 变体）
+#   换代前为：  20260311120504 / 20260311120702

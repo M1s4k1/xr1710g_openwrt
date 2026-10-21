@@ -1,0 +1,43 @@
+# Source: Gilly1970/Gemtek-W1700K-6.18 openwrt-patches/045 (2026-09-10), 论坛 t/249319 #441 发布
+#   https://github.com/Gilly1970/Gemtek-W1700K-6.18/blob/main/openwrt-patches/045-wifi-mt76-mt7996-refresh-tx-agg-timer-under-npu-offload.patch
+# Upstream: n/a（mt76 上游无对应提交；openwrt/mt76 master be5ce791 中该门仍只判 WED）
+# Reason: NPU offload 下 TX block-ack 会话定时器无人刷新 —— 对端（Intel 站点常见）
+#   协商 BlockAck timeout 后，传输中途 DELBA，吞吐塌到未聚合速率且不自恢复，直到
+#   无关流量走软件路径才恢复；社区实测"单个 ping 包即恢复、持续 ping 则全程正常"
+#   （论坛 t/222776 #3900/#3901、t/249319 #440～#442）。mt7996_mac_add_txs_skb() 是
+#   全驱动唯一刷新点（grep ieee80211_refresh_tx_agg_session_timer 仅 1 处），其门为
+#   mtk_wed_device_active()；NPU 路径（mt76_npu_device_active()）被排除在门之外。
+#   本补丁把门扩为 WED || NPU，与 WED 路径行为一致。
+# 机制前提（待实机确认，见 docs/absorptions/2026-09-11-absorption-plan.md §待验证）：
+#   NPU 卸载下 PKT_TYPE_TXS 是否仍上报到 host（若非，则本补丁是 no-op，需把刷新
+#   挪到 NPU TXFREE 路径 —— Gilly 自己亦在论坛提示此退路）。应用后以
+#   "Samba/大文件 + Intel 客户端吞吐是否仍塌陷"为判据。
+# 验证：已对 openwrt/mt76 be5ce7910521492d4a2e4ce7ee3843680a46c047 真实应用通过
+#   （patch -p1：Hunk #1 succeeded at 1508, offset -3 行）；符号 mt76_npu_device_active()
+#   在同版本 mt76.h 中定义（1760 行）且 mt7996/mac.c 已含其它 NPU 分支，可见性无问题。
+From: Gilly <gilroyscott1970@gmail.com>
+Date: Wed, 10 Sep 2026 00:00:00 +0000
+Subject: [PATCH] wifi: mt76: mt7996: refresh the tx agg session timer under NPU offload
+
+On boards using Airoha NPU offload, TX block-ack sessions get torn down mid-transfer
+whenever the peer negotiates a BlockAck timeout (Intel stations commonly do). Offloaded
+traffic bypasses mac80211, so nothing refreshes the session timer - the driver only did
+that for WED devices, and the NPU path was gated out. The result is a DELBA in the middle
+of a transfer and throughput collapsing to un-aggregated rates, with no recovery until
+unrelated traffic happens to take the software path. Extending the gate to cover NPU
+devices keeps the session alive the same way it already works on WED.
+
+Signed-off-by: Gilly <gilroyscott1970@gmail.com>
+---
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1511,7 +1511,8 @@
+ 		}
+ 	}
+ 
+-	if (mtk_wed_device_active(&dev->mt76.mmio.wed) && wcid->sta) {
++	if ((mtk_wed_device_active(&dev->mt76.mmio.wed) ||
++	     mt76_npu_device_active(&dev->mt76)) && wcid->sta) {
+ 		struct ieee80211_sta *sta;
+ 		u8 tid;
+ 

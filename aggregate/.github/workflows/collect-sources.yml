@@ -1,0 +1,100 @@
+name: collect-sources
+
+# 收集内核/mt76 prepare 后的真实源码片段，用于离线生成精确补丁（#1 E2 / #14 / #15 / #4）。
+# 不构建固件，只跑 target/linux/prepare + package/kernel/mt76/prepare。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    env:
+      TREE: ${{ github.workspace }}/openwrt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: overlay
+
+      - name: 克隆 openwrt master 并叠加本仓库
+        run: |
+          git clone -q --depth 1 https://github.com/openwrt/openwrt.git "$TREE"
+          rsync -a --exclude='.git' --exclude='audit-ubi2oc' --exclude='.github' --exclude='openwrt' \
+            "$GITHUB_WORKSPACE/overlay/" "$TREE/"
+          cd "$TREE" && chmod +x scripts/*.sh
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential gawk flex bison gettext git \
+            libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget
+
+      - name: 应用补丁层 + files overlay（实验档）
+        run: |
+          cd "$TREE"
+          ./scripts/apply-patches.sh . --experimental
+          mkdir -p files && cp -rf "$GITHUB_WORKSPACE/overlay/files/." files/
+
+      - name: 配置（defconfig + seed）
+        run: |
+          cd "$TREE"
+          make defconfig
+          cat "$GITHUB_WORKSPACE/overlay/config/seed-config.diff" >> .config
+          make defconfig
+          grep -q "CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y" .config || { echo "XR1710G 目标未选中"; exit 1; }
+
+      - name: prepare 内核与 mt76 源码
+        # 允许失败：内层内核补丁失配时仍要拿到 prepare 出的真实源码片段，用于离线精确重基。
+        # make prepare 在失败处停下，故收集到的是「失败补丁之前」的真源 —— 正是重基所需基线。
+        continue-on-error: true
+        id: prepare
+        run: |
+          cd "$TREE"
+          make target/linux/prepare V=s || echo "::warning::target/linux/prepare 失败（继续收集已有真源）"
+          make package/kernel/mt76/prepare V=s || echo "::warning::mt76 prepare 失败（继续收集已有真源）"
+
+      - name: 收集源码文件
+        run: |
+          cd "$TREE"
+          OUT="$GITHUB_WORKSPACE/collect"
+          mkdir -p "$OUT"
+          KROOT=$(echo build_dir/target-aarch64_cortex-a53_musl/linux-*/linux-6.18.44)
+          echo "KROOT=$KROOT" > "$OUT/paths.txt"
+          for f in \
+            net/netfilter/nft_flow_offload.c \
+            net/netfilter/nf_flow_table_path.c \
+            net/netfilter/nf_flow_table_core.c \
+            net/netfilter/nf_flow_table_inet.c \
+            net/netfilter/nf_flow_table_offload.c \
+            net/netfilter/nf_flow_table_ip.c \
+            include/net/flow_offload.h \
+            include/net/netfilter/nf_flow_table.h \
+            include/net/xfrm.h \
+            net/xfrm/xfrm_policy.c \
+            net/xfrm/xfrm_state.c \
+            drivers/net/ethernet/airoha/airoha_eth.h \
+            drivers/net/ethernet/airoha/airoha_soe.h \
+            drivers/net/phy/mediatek/mtk-ge-soc.c \
+            drivers/net/phy/mediatek/mtk-phy-lib.c \
+            drivers/net/phy/mediatek/mtk.h \
+            drivers/net/ethernet/airoha/airoha_eth.c \
+            drivers/leds/trigger/ledtrig-netdev.c \
+            drivers/leds/led-class.c \
+            drivers/leds/led-triggers.c; do
+            if [ -f "$KROOT/$f" ]; then
+              mkdir -p "$OUT/$(dirname "$f")"
+              cp -v "$KROOT/$f" "$OUT/$f"
+            else
+              echo "MISSING: $f" >> "$OUT/paths.txt"
+            fi
+          done
+          find build_dir/target-aarch64_cortex-a53_musl -maxdepth 4 -type d -name 'mt76*' >> "$OUT/paths.txt" 2>/dev/null || true
+          find build_dir/target-aarch64_cortex-a53_musl -maxdepth 4 -type f -name 'debugfs.c' -path '*mt76*' -exec cp -v {} "$OUT/mt76-debugfs.c" \; 2>/dev/null || true
+          find build_dir/target-aarch64_cortex-a53_musl -maxdepth 4 -type f -name 'mac.c' -path '*mt76*' -exec cp -v {} "$OUT/mt76-mac.c" \; 2>/dev/null || true
+          ls -lR "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-mt76-sources
+          path: collect
+          if-no-files-found: error

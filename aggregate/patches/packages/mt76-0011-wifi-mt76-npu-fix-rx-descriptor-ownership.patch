@@ -1,0 +1,148 @@
+# Source: forum t/222776 n=3890 (Oever González, not hosted)
+# Upstream: n/a (forum post; evaluate against openwrt/mt76 master for upstreaming)
+# Reason: fix both halves of the NTB NPU RX descriptor ownership handshake:
+#         bound the consume chain walk to armed slots (dcache_inval_poc panic)
+#         and arm refill slots only after the buffer address is visible
+#         (zero-address DMA race / ring-drift deadlock)
+From: Oever González <software@notengobattery.com>
+Date: Fri, 4 Sep 2026 11:03:49 -0600
+Subject: [PATCH] wifi: mt76: npu: fix the rx descriptor ownership handshake
+
+The host and the NPU trade ownership of RX ring slots through the DONE
+bit in the descriptor ctrl word: the NPU sets DONE once it has written a
+frame, and treats a descriptor whose ctrl reads DONE-clear as a slot it
+may write into. The driver gets both halves of that handshake wrong.
+
+On consume, mt76_npu_dequeue() reads the chain length from the ring-tail
+descriptor and walks it without ever comparing it against the number of
+armed slots. PKT_COUNT is three bits, so the count itself is at most
+seven, but nothing ties it to q->queued: whenever fewer slots are armed
+than the count claims, the walk strides past them into entries holding
+no valid buffer. DONE stays set on a consumed descriptor until refill
+re-arms it, so the walk passes the DONE check and either re-delivers
+already consumed pages or hands a garbage address to
+dma_sync_single_for_cpu():
+
+  Unable to handle kernel paging request at virtual address ffffffff80000700
+  CPU: 2 PID: 1472 Comm: napi/phy0-77 Tainted: G O 6.12.94
+  pc : dcache_inval_poc+0x28/0x58
+  Call trace:
+   dcache_inval_poc+0x28/0x58
+   __dma_sync_single_for_cpu+0xc0/0xe0
+   mt76_npu_rx_queue_init+0x2ec/0x4c0 [mt76]  (static mt76_npu_dequeue)
+   __napi_poll+0x34/0x180
+  Kernel panic - not syncing: Oops: Fatal exception in interrupt
+
+This is a missing bound, not a decoding problem: the PKT_COUNT field
+definition was corrected well before the trace above was taken, and the
+walk is unbounded against the armed count regardless of how any
+descriptor field is laid out.
+
+The mid-chain bail-out is unsound for the same reason: it frees the
+partial skb while the unconsumed ring slots still reference its pages,
+and the refill in the same NAPI pass can re-arm those pages at the head,
+leaving one page with two owners.
+
+On refill, mt76_npu_fill_rx_queue() clears the descriptor before storing
+the new buffer address:
+
+	memset(&desc[q->head], 0, sizeof(*desc));
+	desc[q->head].addr = e->dma_addr[0];
+
+so the memset arms the slot while addr still reads zero, and nothing
+orders the two stores. If the NPU takes the slot in that window it DMAs
+a frame to address zero and advances CPU_IDX, which it owns, while the
+host still expects its own refill there. The two sides' ring positions
+drift by one per hit. The host's only index write is DMA_IDX, its
+consume position, advanced on a successful dequeue, and that is exactly
+the operation the drift breaks: the host waits for DONE on a slot the
+NPU has already passed. The queue deadlocks with the driver reporting
+every slot armed and the NPU reporting HOSTADPT_API_Q_FULL indefinitely,
+and only re-probing the device recovers it.
+
+Fix both halves:
+
+ - never walk more slots than are armed, and verify the whole chain is
+   DONE before touching any page, so a bad count becomes a parse error
+   instead of memory corruption;
+ - order the descriptor reads after the DONE checks with dma_rmb();
+ - store ctrl last on refill, behind a dma_wmb(), so the buffer address
+   is visible to the NPU before the slot is armed.
+
+A wrong count within the armed region can still mis-frame packets, since
+the PKT_COUNT layout is firmware-ABI dependent, but it can no longer
+walk out of the ring.
+
+Reproduced on a Gemtek W1700K (Airoha AN7581 + MT7996) by stopping the
+flow-offload daemon while about 1.1 Gbit/s was in flight to a 6 GHz
+client: 3 of 3 runs wedged before, with the RX queue head and tail
+frozen at 511 armed slots and Q_FULL growing by exactly the delivery
+shortfall; 5 of 5 survived after, at roughly 40k pps.
+
+That reproduction ran on a revision of the dequeue fix that also cleared
+ctrl on consume, which widens the refill window from the memset to the
+whole span between consume and refill. The form here does not clear ctrl
+on consume, so the window is narrower; the ordering defect and the
+deadlock it produces are unchanged.
+
+Signed-off-by: Oever González <software@notengobattery.com>
+---
+ npu.c | 30 +++++++++++++++++++++++-------
+ 1 file changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/npu.c b/npu.c
+index dd954df..9746562 100644
+--- a/npu.c
++++ b/npu.c
+@@ -32,8 +32,16 @@ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
+ 		page = virt_to_head_page(e->buf);
+ 		e->dma_addr[0] = page_pool_get_dma_addr(page) + offset;
+ 
+-		memset(&desc[q->head], 0, sizeof(*desc));
++		desc[q->head].info = 0;
++		desc[q->head].data = 0;
+ 		desc[q->head].addr = e->dma_addr[0];
++		desc[q->head].rsv = 0;
++		/* the NPU takes a descriptor whose ctrl reads DONE-clear as a
++		 * slot it may write into, so arm it only once the new buffer
++		 * address is visible
++		 */
++		dma_wmb();
++		WRITE_ONCE(desc[q->head].ctrl, 0);
+ 
+ 		q->head = (q->head + 1) % q->ndesc;
+ 		q->queued++;
+@@ -67,19 +75,27 @@ static struct sk_buff *mt76_npu_dequeue(struct mt76_dev *dev,
+ 	int i, nframes, index = q->tail;
+ 	struct sk_buff *skb = NULL;
+ 
++	if (!q->queued)
++		return NULL;
++
+ 	nframes = FIELD_GET(NPU_RX_DMA_PKT_COUNT_MASK, desc[index].info);
+-	nframes = max_t(int, nframes, 1);
++	/* a chain can never span more slots than are armed */
++	nframes = clamp(nframes, 1, q->queued);
+ 
++	/* a partial chain cannot be unwound: the ring still owns its pages */
++	for (i = 0; i < nframes; i++) {
++		if (!FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[index].ctrl))
++			return NULL;
++		index = (index + 1) % q->ndesc;
++	}
++	dma_rmb();
++
++	index = q->tail;
+ 	for (i = 0; i < nframes; i++) {
+ 		struct mt76_queue_entry *e = &q->entry[index];
+ 		int len = FIELD_GET(NPU_RX_DMA_DESC_CUR_LEN_MASK,
+ 				    desc[index].ctrl);
+ 
+-		if (!FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[index].ctrl)) {
+-			dev_kfree_skb(skb);
+-			return NULL;
+-		}
+-
+ 		dma_sync_single_for_cpu(dev->dma_dev, e->dma_addr[0],
+ 					e->dma_len[0],
+ 					page_pool_get_dma_dir(q->page_pool));

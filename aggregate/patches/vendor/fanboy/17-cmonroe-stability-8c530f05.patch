@@ -1,0 +1,69 @@
+From 8c530f05be74d6355f530f350b768d0738733611 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Mon, 9 Mar 2026 20:46:19 -1000
+Subject: [PATCH] Stability and optimization patches by @cmonroe
+
+---
+ ...ts-enable-EHT-beamforming-by-default.patch | 26 +++++++++++++++++++
+ ...apd-mtk-6G-band-does-not-require-DFS.patch | 19 ++++++++++++++
+ 2 files changed, 45 insertions(+)
+ create mode 100644 package/network/config/wifi-scripts/patches/010-wifi-scripts-enable-EHT-beamforming-by-default.patch
+ create mode 100644 package/network/services/hostapd/patches/mtk-0015-hostapd-mtk-6G-band-does-not-require-DFS.patch
+
+diff --git a/package/network/config/wifi-scripts/patches/010-wifi-scripts-enable-EHT-beamforming-by-default.patch b/package/network/config/wifi-scripts/patches/010-wifi-scripts-enable-EHT-beamforming-by-default.patch
+new file mode 100644
+index 00000000000000..68c4a0b14d011a
+--- /dev/null
++++ b/package/network/config/wifi-scripts/patches/010-wifi-scripts-enable-EHT-beamforming-by-default.patch
+@@ -0,0 +1,26 @@
++From: Chad Monroe <chad@monroe.io>
++Date: Mon, 24 Nov 2025 14:36:47 -0800
++Subject: [PATCH] wifi-scripts: enable EHT beamforming by default
++
++If EHT is supported, always enable EHT beamforming.
++
++Signed-off-by: Chad Monroe <chad@monroe.io>
++---
++ src/lib/netifd/wireless/mac80211.sh |    6 ++++++
++ 1 file changed, 6 insertions(+)
++
++--- a/src/lib/netifd/wireless/mac80211.sh
+++++ b/src/lib/netifd/wireless/mac80211.sh
++@@ -517,6 +517,12 @@ mac80211_hostapd_setup_base() {
++ 
++ 	if [ "$enable_be" != "0" ]; then
++ 		append base_cfg "ieee80211be=1" "$N"
+++
+++		# force enable eBF for now
+++		append base_cfg "eht_su_beamformer=1" "$N"
+++		append base_cfg "eht_su_beamformee=1" "$N"
+++		append base_cfg "eht_mu_beamformer=1" "$N"
+++
++ 		[ "$hwmode" = "a" ] && {
++ 			append base_cfg "eht_oper_chwidth=$eht_oper_chwidth" "$N"
++ 			append base_cfg "eht_oper_centr_freq_seg0_idx=$eht_center_seg0" "$N"
+diff --git a/package/network/services/hostapd/patches/mtk-0015-hostapd-mtk-6G-band-does-not-require-DFS.patch b/package/network/services/hostapd/patches/mtk-0015-hostapd-mtk-6G-band-does-not-require-DFS.patch
+new file mode 100644
+index 00000000000000..8e6d12108d5622
+--- /dev/null
++++ b/package/network/services/hostapd/patches/mtk-0015-hostapd-mtk-6G-band-does-not-require-DFS.patch
+@@ -0,0 +1,19 @@
++From cd2d0f7ee500cbdf302b2042e9e4804107e06148 Mon Sep 17 00:00:00 2001
++From: Peter Chiu <chui-hao.chiu@mediatek.com>
++Date: Mon, 13 Feb 2023 11:03:53 +0800
++Subject: [PATCH 15/32] hostapd: mtk: 6G band does not require DFS
++
++---
++ src/ap/dfs.c | 1 +
++ 1 file changed, 1 insertion(+)
++
++--- a/src/ap/dfs.c
+++++ b/src/ap/dfs.c
++@@ -1561,6 +1561,7 @@ int hostapd_is_dfs_required(struct hosta
++ 	if ((!(iface->drv_flags & WPA_DRIVER_FLAGS_DFS_OFFLOAD) &&
++ 	     !iface->conf->ieee80211h) ||
++ 	    !iface->current_mode ||
+++	    is_6ghz_freq(iface->freq) ||
++ 	    iface->current_mode->mode != HOSTAPD_MODE_IEEE80211A)
++ 		return 0;
++ 

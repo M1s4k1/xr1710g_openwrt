@@ -1,11 +1,11 @@
 # xr1710g_openwrt/ — XR1710G func ·构建骨架
 
 本目录是 **XR1710G（Gemtek / Airoha EN7581 / MT7996 Wi‑Fi7）func 固件** 的
-构建骨架仓库。它**不含 OpenWrt 源码**，只放「相对上游 `genshanxinli/xr1710g-openwrt` 的差异」
-（diff-as-config），构建时叠加到上游源码树。
+构建骨架仓库。它**不含 OpenWrt 源码**，但内置了冻结的 aggregate 补丁层；aggregate 来自 `genshanxinli/xr1710g-openwrt` 的固定快照，作为本项目内部文件使用，构建时不会 clone、fetch 或自动更新。
 
-- 上游源码（只读引用）：上游 `genshanxinli/xr1710g-openwrt` 仓库（脚本自动探测 `../xr1710g-openwrt`、`../../xr1710g-openwrt` 等，或通过 `UPSTREAM_DIR` 指定）
-- 设计 / 决策文档：置于本仓库外的工作目录（kickoff、配置兼容层、补丁清单、下游手册、评审、刷机前清单、WAN TX 排查、复审报告），不随本仓库发布
+- 内置 aggregate：[`aggregate/`](aggregate/)（冻结快照，项目内部文件；来源和复制基线见 `config/source-lock.env`）
+- OpenWrt 源码树：单独准备，脚本通过 `--tree` / `OPENWRT_DIR` 指定
+- 设计 / 决策文档：置于本仓库内的 `doc/` 与 `upstream-decisions.md`
 
 ---
 
@@ -13,16 +13,17 @@
 
 | 档位 | 说明 | 活动补丁 |
 |------|------|---------|
-| `stock`（func 正式档） | 完整选择集 | **103** |
-| `v1-safe`（保守档，首次刷机建议） | 最小差异、不提档实验补丁 | **63** |
+| `stock`（func 正式档） | 完整选择集 | **104** |
+| `v1-safe`（保守档，首次刷机建议） | 最小差异、不提档实验补丁 | **64** |
 
-活动补丁数由 `scripts/merge-manifest.py` 实算（上游基线 `1fea1e5`）。
+活动补丁数由 `scripts/merge-manifest.py` 实算（内置 aggregate 快照 `244d433`）。
 
 ## 目录结构
 
 ```
 xr1710g_openwrt/
-├── local/            # 唯一事实来源（手工维护）
+├── aggregate/        # 内置冻结的补丁聚合层（不作为外部仓库引用）
+├── local/            # 本项目唯一事实来源（手工维护）
 │   ├── manifest.rules / manifest.rules.v1-safe   # 两档选择集定义
 │   ├── patches/       # 本地自研补丁 9501/9601/9602
 │   └── seed.local.diff

@@ -1,0 +1,39 @@
+diff --git a/target/linux/airoha/patches-6.18/9998-net-airoha-fix-ppe-flush-sram-err.patch b/target/linux/airoha/patches-6.18/9998-net-airoha-fix-ppe-flush-sram-err.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9998-net-airoha-fix-ppe-flush-sram-err.patch
+@@ -0,0 +1,34 @@
++# Source: Gilly1970/Gemtek-W1700K-6.18 openwrt-patches/949 (2026-09-12 调研吸收；B2 逐行核对)
++# Upstream: n/a（作者自持）
++# Reason: airoha_ppe_flush_sram_entries() 内层 `int err;` 遮蔽外层 `int i, err = 0;` ——
++#   内层 err 只在循环体内可见，循环里的 `break` 之后外层 `return err` 恒为 **0**；
++#   即 SRAM FOE 刷写失败被静默吞掉，调用方（airoha_ppe_init）拿不到真实 errno。
++#   1 行级零风险修正：删外层未用 err、循环内改 `return err`、末尾 `return 0`。
++# 位置：独立 ROOT 补丁（default 档）——与本仓 9035/9036/9037 同文件 airoha_ppe.c，
++#   改的是 1393-1404 区（flush_sram_entries），与它们的区段不相交；全序真实应用已实证。
++diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
++index 5c9dff6..a124f15 100644
++--- a/drivers/net/ethernet/airoha/airoha_ppe.c
+++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
++@@ -1330,7 +1330,7 @@ static int airoha_ppe_flush_sram_entries(struct airoha_ppe *ppe)
++ {
++ 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
++ 	struct airoha_foe_entry *hwe = ppe->foe;
++-	int i, err = 0;
+++	int i;
++ 
++ 	for (i = 0; i < sram_num_entries; i++) {
++ 		int err;
++@@ -1338,10 +1338,10 @@ static int airoha_ppe_flush_sram_entries(struct airoha_ppe *ppe)
++ 		memset(&hwe[i], 0, sizeof(*hwe));
++ 		err = airoha_ppe_foe_commit_sram_entry(ppe, i);
++ 		if (err)
++-			break;
+++			return err;
++ 	}
++ 
++-	return err;
+++	return 0;
++ }
++ 
++ static struct airoha_npu *airoha_ppe_npu_get(struct airoha_eth *eth)

@@ -1,0 +1,585 @@
+# 补丁层应用清单（MANIFEST）
+# 格式：<补丁相对路径> <目标目录|ROOT>
+#   - ROOT = 在 openwrt 树根 git apply（跨目录补丁）
+#   - 其它目标 = 补丁拷贝目录（相对树根），由 OpenWrt 构建时应用
+# 前缀 #EXP = 实验档（apply-patches.sh --experimental 才应用；毕业并入后取消注释）
+# 前缀 #OC  = OC 档（apply-patches.sh --oc 才应用；激进档资产）
+# 前缀 #DISABLED = 停用项（默认不应用）
+# 注意：活动行不允许尾随注释（会破坏目标解析）；说明一律写成整行注释。
+# 原料桶 patches/vendor/fanboy/ = OpenW1700k ubi2-oc 全 21 commit（git format-patch，2026-08-17 抓取；
+#   2026-09-12 P6 因上游 force-push 补入 21 号 HSUART，见 FIXES F133），
+#   供评审/拆分后移入正式桶；patches/ORDER 是档位视图（评审用），本文件是实际应用清单。
+
+# ── packages：regdb（决策=默认 510/520；500 world 去 NO-IR 已上游自带 500-world-regd-5GHz.patch；
+#     555=OC 档（0520 后应用，顺序固化）；530 停用）──
+# F20：regdb-0500 与 OpenWrt 自带 500-world-regd-5GHz.patch 内容完全一致（重复补丁，2026-08-17 删除）；
+#     0521 为 5G UNII-3/4@160/30 默认档；0555 按 0510→0520→0521 应用后状态重建（仅 6G 30）。
+patches/packages/regdb-0510-us-6ghz-no-no-ir.patch                     package/firmware/wireless-regdb/patches/
+patches/packages/regdb-0520-us-power-limits-uni1-29-6g-29.patch        package/firmware/wireless-regdb/patches/
+patches/packages/regdb-0521-us-unii3-4-160mhz-30.patch           package/firmware/wireless-regdb/patches/
+#OC patches/packages/regdb-0555-w1700k-unii4-6g-30.patch               package/firmware/wireless-regdb/patches/
+#DISABLED patches/packages/regdb-0530-us-6ghz-lab-indoor-sp-override-DISABLED.patch package/firmware/wireless-regdb/patches/
+# 0530 已于 2026-08-17 按 wireless-regdb 2026.05.30「500→0510→0520 后」状态重建（fuzz 2 → 0，
+#   语义不变：US 6g 29→36dBm 实验室 SP）；启用时按 verify 流程再实证即可。
+
+# ── packages：mt76 txpower / NPU debugfs（默认档核心）──
+# 注：package/kernel/mt76/patches/ 在 master 不存在，由脚本 mkdir 创建，OpenWrt 构建时自动应用
+# fanboy14 0001/0003 已对 openwrt/mt76 c5a3bd91 重建（0003 删除 hunk 随上游 GENMASK 31:14→31:24 调整，2026-08-22）
+patches/packages/mt76-0001-wifi-mt76-mt7996-add-token-and-NPU-debugfs-counters.patch       package/kernel/mt76/patches/
+patches/packages/mt76-0003-wifi-mt76-mt7996-replace-direct-WTBL-access-with-MCU-for-station-statistics.patch       package/kernel/mt76/patches/
+patches/packages/mt76-0006-wifi-mt76-mt7996-refresh-power-limits-on-txpower-changes.patch       package/kernel/mt76/patches/
+patches/packages/mt76-0007-wifi-mt76-mt7996-enable-firmware-txpower-limit-controls.patch        package/kernel/mt76/patches/
+patches/packages/mt76-0008-wifi-mt76-mt7996-eeprom-power-unlock.patch          package/kernel/mt76/patches/
+# 0009：tx_failed 只记终端失败，retries 不再计入 tx_failed（IP25/IP26，A5，default）
+patches/packages/mt76-0009-report-only-terminal-tx-failures.patch          package/kernel/mt76/patches/
+# ── packages：mt76 EHT 补丁（2026-08-31 毕业，ci-74 实机；9990-9993 评审 F25/F59）──
+#   毕业证据：ci-74 experimental 实机 6G AP 侧 EHT320 生效、5 轮 wifi down/up 无复发；
+#   6G 客户端侧行为按用户口径延后补验（无 6G 客户端），发现问题再修。
+#   9992（PS-sync TLV 校验）已随 9028 bump c5a3bd91 删除：上游 mt76 master 已合入同款修复（F59）。
+# 0005 TXFREE 截断静默（2026-08-31 毕业；再同步自 ubi2-oc e7a8143，构建绿 + wifi down/up 通过）
+patches/packages/mt76-0005-wifi-mt76-mt7996-guard-txfree-overrun.patch          package/kernel/mt76/patches/
+#EXP patches/packages/mt76-0010-set-skb-device-for-npu-rx.patch          package/kernel/mt76/patches/
+# 0011：NPU RX descriptor ownership 修复（Oever González，NTB 素材；consume 越界 walk panic + refill 零地址
+#       竞态；对 be5ce791 git apply 干净。2026-09-07 吸收批次 WP-0011，default 档）
+patches/packages/mt76-0011-wifi-mt76-npu-fix-rx-descriptor-ownership.patch          package/kernel/mt76/patches/
+# 0012：NPU del_sta（naoki66 2d3aa30 / Ryan Chen：STA 断开→同 MAC 重连 ~1Mbps 残留修复；#EXP，2026-09-07 WP-delsta）
+#EXP patches/packages/mt76-0012-wifi-mt76-npu-del-sta.patch          package/kernel/mt76/patches/
+# 0013：NPU offload 下刷新 tx-agg(BlockAck) 会话定时器（Gilly 045，2026-09-10 论坛 t/249319 #441 发布；
+#   全驱动唯一刷新点 mt7996_mac_add_txs_skb() 的门由 WED 扩为 WED||NPU。社区实测：Samba/大文件传输
+#   吞吐塌陷、单包 ping 即恢复（t/222776 #3900/#3901）。**机制前提未实机确认**（NPU 下 PKT_TYPE_TXS
+#   是否仍上报 host），故先 #EXP；实机判据通过后毕业 default，见 docs/absorptions/2026-09-11-absorption-plan.md）
+#EXP patches/packages/mt76-0013-wifi-mt76-mt7996-refresh-tx-agg-timer-under-npu-offload.patch    package/kernel/mt76/patches/
+# 0014：NPU 复位 + panic/竞态/越界加固（Gilly 047/034/035/036/042/026/044）——047 修整机复位后
+#   host TX 永死与 NAPI NULL oops；034 reg_lock irqsave 防 AP panic；其余为 wcid 竞态与事件越界校验
+#   ⚠ 本补丁是**包裹补丁**（动作 = 在树内新建 package/kernel/mt76/patches/0{26,34,35,36,42,44,47}-*.patch，
+#   内嵌 7 个内层补丁）⇒ dest 必须是 ROOT。2026-09-14 F165 修：原先写拷贝目录，包裹补丁被拷进
+#   mt76/patches/ 后由构建施加于 **mt76 源码树**，内层文件落在 <mt76 源码>/package/kernel/mt76/patches/
+#   而永不被 glob 应用 ⇒ 7 项加固（NPU 复位后 host TX 永死 / reg_lock irqsave / wcid 竞态 / 事件越界）静默失效。
+#   判据与守卫见同轮 F165 行（audit-patches.sh 新增「包裹补丁 dest 必须 ROOT」检查）。
+#EXP patches/packages/mt76-0014-wifi-mt76-npu-reset-panic-race-hardening.patch    ROOT
+# 0015（= Gilly 039+046 合并，2026-09-12 吸收）：mt7996_mac_work() 的 ADM_STAT/MSDU_COUNT
+#   轮询门只判 WED → 扩到 `|| mt76_npu_device_active()`（NPU 板每站 tx/rx bytes/packets 恒 0，
+#   因 0003 改了同一 hunk 上面两行却没动这个门）；mt7996_sta_statistics() 同步在 NPU 上报固件
+#   计数器（NPU 绕过 mac80211：30s/5GHz 固件 8937 包 vs 软件 161 包），固件计数为 0 时留给 mac80211。
+#   二者必须同档（046 的计数器由 039 扩开的轮询喂给）→ 合一个补丁。实机判据：NPU 板
+#   `iw station dump` 每站 bytes/packets 非 0 且随流量增长。
+#EXP patches/packages/mt76-0015-wifi-mt76-mt7996-npu-firmware-sta-counters.patch    package/kernel/mt76/patches/
+# 0016（#EXP，Gilly 020）：radar 事件用检测方 phy 的 chanctx 上报（单 wiphy 多 radio 下 NULL 会
+#   标记全部 band；本机 phy0 承载 radio0/1/2）。判据：2.4G BSS 不再出现 radar 日志。
+#EXP patches/packages/mt76-0016-wifi-mt76-mt7996-radar-detecting-chanctx.patch    package/kernel/mt76/patches/
+# 0017（#EXP，Gilly 032）：亚 64 窗口 BlockAck（Apple 站点 TID6=8/TID1=16）旁路 HW_RRO，
+#   避免片上重排环/会话状态机非法导致后续关联 RX 卸载停摆；>=64 仍走硬件。
+#   与 07 互补（F175/F176）：07 释放固件 RRO 会话，本补丁对亚 64 会话禁用 HW_RRO；两料双跑有上下文耦合（正反序都冲突），需 --fuzz；
+#   archive-260818 的 0015-…avoid-stale-npu-wcid-reuse 是第三条思路，P25 评估为互补不替代
+#   但因「NPU 何时冲掉陈旧上下文」不可核、位图副作用不可控 ⇒ 不吸收（F176）。
+#EXP patches/packages/mt76-0017-wifi-mt76-mt7996-bypass-hwrro-sub64-ba.patch    package/kernel/mt76/patches/
+# ── P3-C：mt76 候选（YYH 0010/0021/0047/0080/0101/0145/0038，2026-09-12 甄别）──
+#   吸收：0018（=YYH 0010，编号冲突改 0018）/0021/0101/0145；
+#   不吸收：0047（**be5ce791 已含同款**：mac80211.c mt76_rx_release_amsdu 已有
+#     `mt76_queue_is_wed_rro_data(rxq) && hwrro_mode == MT76_HWRRO_V3 → q = MT_RXQ_RRO_IND`）；
+#   0080（捕获到的补丁里 MT_QFLAG_CHECK_DDONE **从未被设置**（仅定义+dma.c 读+ mt7996/dma.c
+#     `=`→`|=`）→ 死代码；作者自述预防性；待有置位版本再收）；0038（wcid→wcid_idx 大重构，
+#     MTK 私有、牵动 RX 状态结构体，风险中-高 → 暂缓，见 F127）。
+# 0018（#EXP）：删 mt7996_mac_sta_init_link 中 CONN_STATE_DISCONNECT 的 mcu_add_sta → 修 STA 重连后 DL OFDMA。
+#EXP patches/packages/mt76-0018-wifi-mt76-mt7996-fix-dl-ofdma-after-sta-reconnect.patch    package/kernel/mt76/patches/
+# 0021（#EXP）：mt7996_rx_get_wcid 的 global_wcid 判定（vif wcid 取 TxS 场景）。
+#EXP patches/packages/mt76-0021-mtk-mt76-mt7996-only-disallow-global-wcid.patch    package/kernel/mt76/patches/
+# 0022（**default**，Gilly 048，2026-09-13 F153）：EAPOL TX 路径 NULL sta 守卫——hostapd 可能把已删除站点的
+#   EAPOL 控制帧交给驱动，mt7996_tx_prepare_skb() 的软件 MLD 翻译无条件解引用 sta->mlo → TX worker oops。
+#   同函数 data-QoS MLO link 选择已检查 sta（pin 源 mt7996/mac.c:1057），本条补剩余半边。
+#   纯防御性守卫：sta!=NULL 语义逐字节不变；对 pin 真源 be5ce791 `--fuzz=0` rc=0。
+patches/packages/mt76-0022-wifi-mt76-mt7996-guard-null-sta-on-eapol-tx.patch    package/kernel/mt76/patches/
+# 0023（**#EXP**，2026-09-16 F172；slot_reset fail-fast = P22/a）：mt7996 PCIe AER error handling + 受控重启——
+#   实机 [14] CmpltTO（Uncorrectable Non-Fatal）+ mt7996e 无 error_detected 回调 ⇒ `AER: can't recover`，
+#   恢复被放弃、设备仍在总线却整机复位失败、Wi-Fi 死（F170 否证 A 后的真根因）。补 error_detected
+#   （perm_failure ⇒ DISCONNECT，其余含 Non-Fatal 的 pci_channel_io_normal ⇒ NEED_RESET，走 aer_root_reset 的
+#   secondary bus reset；**不**照抄 mt7921 的 uncorrectable⇒DISCONNECT）+ slot_reset（PCI 重使能后 **fail fast**：
+#   MCU 已硬死——`Message 00000010`（PATCH_SEM）×10 ≈54 s 全超时 ⇒ `chip full reset failed`（A/B/stock 三版同灭），
+#   且 PCI remove+rescan 虽能复活 MCU 却留不下可服务 beacon（P22/b-redo）⇒ 10 s 后 kernel_restart() 受控重启；
+#   不再排 reset_work）。同文件共存序：0023 < 0153 < 0160（glob 序，已验三条逐 hunk 全过且 **fuzz=0**，仅行偏移）。
+#   实机判据见 docs/FIXES.md F172/F173。
+#EXP patches/packages/mt76-0023-wifi-mt76-mt7996-add-pcie-aer-error-handling.patch    package/kernel/mt76/patches/
+# 0101（**default**）：默认 EEPROM 固件大小校验（防截断后越界读；上游 next 线已含，pin bump 时复查删除）。
+patches/packages/mt76-0101-wifi-mt76-mt7996-validate-default-eeprom-size.patch    package/kernel/mt76/patches/
+# 0145（#EXP）：广告 NL80211_EXT_FEATURE_SET_SCAN_DWELL（扫描驻留时间可配）。
+#EXP patches/packages/mt76-0145-wifi-mt76-mt7996-scan-dwell-time-hw-cap.patch    package/kernel/mt76/patches/
+# ── P3-B：mt76 NPU 生命周期（YYH2913 0147..0162，2026-09-12 吸收；全部 #EXP）──
+#   按文件名 glob 序应用（= 依赖序）：0147 < 0153 < 0154 < 0156 < 0158 < 0159 < 0160 < 0161 < 0162。
+#   硬前置 = root/9061（内核侧 airoha_npu_recover()/wait_recovery()）。
+#   0157（preflight NPU RX fragments）**不吸收**——与本仓 mt76-0011 同处且被其覆盖（0011 有实机
+#   复现证据 + clamp 容错）；0130/0151 跳过（已由 0014 覆盖）。
+# 0147（= YYH 0147+0155 合并）：NPU hw init / reserved-memory / stop 握手遇 -ETIMEDOUT/-EAGAIN 时
+#   recover 或 wait 后重试一次（mt7996_npu_prepare_retry 为唯一入口；不再二次重启核心）。
+#EXP patches/packages/mt76-0147-wifi-mt76-mt7996-npu-init-retry-after-recovery.patch    package/kernel/mt76/patches/
+# 0153：NPU RX IRQ teardown 排序（npu_irq/npu_irq_registered + mt76_npu_rx_queues_deinit；
+#   mt76_npu_deinit 改 rcu_replace_pointer → synchronize_rcu → queue cleanup → dma_dev 复位 → put）。
+#EXP patches/packages/mt76-0153-wifi-mt76-fix-npu-teardown-ordering.patch    package/kernel/mt76/patches/
+# 0154：NPU DMA 内存挂到 Wi-Fi consumer（mt76_dma_alloc_coherent；NPU offload 下 reload 不再泄漏）。
+#   **本地增补 F127**：补 devm_add_action_or_reset 失败路径的 dma_free_coherent+put_device+kfree。
+#EXP patches/packages/mt76-0154-wifi-mt76-tie-npu-dma-memory-to-the-consumer.patch    package/kernel/mt76/patches/
+# 0156：完成 NPU RX queue teardown（error path 分阶段回滚 + IRQ 门 + 单循环 deinit）。
+#EXP patches/packages/mt76-0156-wifi-mt76-finish-npu-rx-queue-teardown.patch    package/kernel/mt76/patches/
+# 0158：NPU RX 满环填充 + 索引发布移到 refill（与 mt76-0011 共存；满填充不变量需高负载实机压测）。
+#EXP patches/packages/mt76-0158-wifi-mt76-publish-npu-rx-buffers-after-refill.patch    package/kernel/mt76/patches/
+# 0159：保留 NPU TX 环 5 描述符余量 + 提交前验 host-owned（stub 配对已核对，见 F127）。
+#EXP patches/packages/mt76-0159-wifi-mt76-preserve-npu-tx-ring-headroom.patch    package/kernel/mt76/patches/
+# 0160：host 重启前 quiesce 设备（pci_driver.shutdown；本机 MT7996 → is_mt7990 分支不触发）。
+#EXP patches/packages/mt76-0160-wifi-mt76-mt7996-shutdown-device-before-restart.patch    package/kernel/mt76/patches/
+# 0161：跟踪 RX NAPI 注册（dev->napi_registered bitmap；上游 revert 后的正确版本）。
+#   **重基 F127**：dma.c mt76_dma_cleanup 按上游新形态（for + test_bit 门）重写。
+#EXP patches/packages/mt76-0161-wifi-mt76-track-rx-napi-registration.patch    package/kernel/mt76/patches/
+# 0162：unregister 前先 stop NPU（与 SER 路径同序；正常 teardown 超时不再重启核心）。
+#EXP patches/packages/mt76-0162-wifi-mt76-stop-npu-before-unregistering-device.patch    package/kernel/mt76/patches/
+patches/packages/mt76-9990-wifi-mt76-mt7996-advertise-eht-to-firmware-rate-control.patch    package/kernel/mt76/patches/
+patches/packages/mt76-9991-wifi-mt76-mt7996-fill-160mhz-bf-fallback-for-eht-320.patch       package/kernel/mt76/patches/
+patches/packages/mt76-9993-wifi-mt76-mt7996-pass-operating-mode-to-rate-control.patch       package/kernel/mt76/patches/
+# ── P3-D：mac80211 subsys 精选（YYH 397/399/400/405/406/407/409/410，2026-09-12 吸收；全部 #EXP）──
+#   装到 package/kernel/mac80211/patches/subsys/（与上游 20 个 subsys 补丁 + 本仓 411 同目录，
+#   glob 序排在 392 之后、411 之前）。全部先 #EXP（MAC80211/CSA 类改动需实机三频+MLO 回归）。
+#   实证：裁剪后的 backports-7.2（上游 subsys 20 + 411）之上逐条应用（410 已按 7.2 重基为 fuzz=0）。
+#EXP patches/packages/mac80211-397-wifi-mac80211-fix-csa-punct-bitmap-sta-mode.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-399-wifi-mac80211-fix-cac-event-call-trace.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-400-wifi-mac80211-fix-non-tx-bss-checking.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-405-wifi-mac80211-handle-csa-finalize-non-tx-bss.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-406-wifi-mac80211-do-not-update-channel-if-csa-ie.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-407-wifi-mac80211-fix-direct-csa-issues.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-409-wifi-mac80211-fix-aql-bmc-mld.patch package/kernel/mac80211/patches/subsys/
+#EXP patches/packages/mac80211-410-wifi-mac80211-prevent-rts-unexpectedly-set.patch package/kernel/mac80211/patches/subsys/
+# ── 9993 的编译依赖（F25 二次构建暴露）：mac80211 backport 未导出 cap_bw/cap_nss helper，
+#   integration 树以 mac80211 包 subsys 补丁补充——随 9993 毕业为默认。
+patches/packages/mac80211-411-export-link-sta-capability-limits.patch package/kernel/mac80211/patches/subsys/
+# ── 802.11r / FT 配套（2026-09-13 P2 §2.8，F144）──
+#   AP 侧 FT 的 key 上传竞态修复（Gilly `400` 改号 412，避本仓 YYH 400 撞号；PR #23181 未合、
+#   pin backports-7.2 无此改动）。与 files/etc/uci-defaults/98-xr1710g-ft-over-ds 配套。
+#EXP patches/packages/mac80211-412-mac80211-defer-ap-side-ft-key-upload.patch package/kernel/mac80211/patches/subsys/
+
+# ── root：跨目录 git apply（默认档）──
+# XR1710G 板级支持（2026-08-17 对 master 重建三件套，替代 PR 原 diff——PR 对 master 5 文件冲突，见 FIXES F01）
+patches/root/9000-xr1710g-common.patch ROOT
+patches/root/9001-xr1710g-dts.patch ROOT
+patches/root/9002-xr1710g-uboot.patch ROOT
+# #22029 等价：939/940 + direct-PLL fallback（OC 前置，F07；上游合入即删）
+patches/vendor/fanboy/03-cpufreq-pmdomain-22029-e5d23549.patch ROOT
+# #22473 kernel 侧 ramoops（uboot 侧仍待上游，F09）
+patches/vendor/fanboy/10-pstore-ramoops-22473-2f7d2d02.patch ROOT
+# 应用包：npu/flowsense/mlo/fancontrol/wifi7 五包（19-core，2026-08-17 从 19 号切片去 fastfetch/netspeedtest，F13；
+#   2026-09-12 P4 重基到 apps pack 0a4f2632de + flowsense 8bf1c9253c：flowsense 1.1.7→1.1.9-r5（含原 9030 的
+#   1.1.8-r5 内容 → 9030 删除）、fancontrol 保持无 root/etc/init.d/fan（F67/A4）、jitter target 223.5.5.5、
+#   F88 RXHWF_FAST 重放）
+patches/root/9017-w1700k-apps-pack-core.patch ROOT
+# 9017 的 FlowSense/NPU RPC 后端在无 br_netfilter 的新 offload 架构下修复 VLAN/PPPoE 开关（F29）
+patches/root/9018-flowsense-offload-new-arch.patch ROOT
+# 9017 的 CLIENTS offload 计数修正（F39）：BND eth= 对路由型 Wi-Fi 客户端不含 station MAC，
+# 增补 BND orig/new IP 匹配 + conntrack [HW_OFFLOAD] 兜底；band_bnd 同步修复
+# 2026-09-12 P4：按新 pack 基线重基（保留 pack 的 MLD 多频段 if/if/if 语义）
+patches/root/9019-npu-client-offload-accounting.patch ROOT
+# 9020：9017 的 getStatus memory_regions 从易失 dmesg 改为 /proc/device-tree/reserved-memory/npu-*（F35/#3/#8）
+patches/root/9020-npu-memory-regions-dt.patch ROOT
+# 9021：9017 的 getWanHealth/getBridgeStats 不再使用 BusyBox 不支持的 ip -s，改读 sysfs（F36/#9）
+patches/root/9021-flowsense-sysfs-stats.patch ROOT
+# 9022：9019 的 IPv6 客户端 offload 计数规范化 + UDP HW_OFFLOAD 以 conntrack 判读（F40/#19/#20）
+# 2026-09-12 P4：按新 pack 基线重基；并修正原版 band_unb awk 多出的 `}`（awk 语法错误——F123）
+patches/root/9022-npu-ipv6-udp-visibility.patch ROOT
+# 9023：NPU RPC 诊断工具缺失或 devmem 读失败时优雅降级（getFrameEngine available:false / pll_freq_mhz:null / 前端不可用）（#2）
+patches/root/9023-npu-rpc-graceful-tools.patch ROOT
+# 9032：PPE debugfs packets/bytes 恒 0（#5）的判读补强——新增 getPpeFlowStats，用 conntrack 双向 tuple 关联每流 packets/bytes
+patches/root/9032-npu-ppe-per-flow-conntrack-stats.patch ROOT
+# 9025：lan1 无链路 down/up 时 rx_errors/rx_dropped 虚增（F38/#15）：无 carrier 时只清 MIB 不并入统计
+patches/root/9025-xr1710g-airoha-no-carrier-rx-stats.patch ROOT
+# 9027：ledtrig-netdev 在 hw-control get 预置 link+link_speed 时写 link 返回 EINVAL（F37③/#14）
+patches/root/9027-ledtrig-netdev-link-mode-mutex.patch ROOT
+# 9031：hw-offloaded netdev LED 的 interval 属性不可写（内核故意拒绝），led 脚本跳过写入避免 led start 退出 1（#14）
+patches/root/9031-base-files-led-skip-interval-hw-offload.patch ROOT
+# 9033：RTL826x 10G PHY LED class 支持（carry openwrt/openwrt #24034；RTL8261BE lan1/lan2，issue #13）
+patches/root/9033-openwrt-24034-rtl826x-led.patch ROOT
+# 9042：airoha small RX rings 增长（上游 PR #24872，Vitaliy Sochnev；backport kernel 7.4 e84b89f17a12）。
+#   ring 4 = force-to-CPU 共享环（DHCP/PPPoE/PPP/LCP/ISAKMP/LLDP…），16 描述符只占 512B/4096B page，
+#   硬件越过环尾把"描述符形状"数据写进内核内存 → DHCP/PPPoE 握手期 panic 或协商卡死。
+#   修法：fallback 16→32 + ring4→128。
+#   **2026-09-13 上游已合入 PR #24872（F151）：#24872 的五段全部被上游吸收（上游自带
+#   182-v7.4-net-airoha-grow-the-small-RX-rings.patch，与本层内嵌 182 逐字节相同；310-10/916-02/
+#   920-12/920-13 的内层 hunk 行号与 16→32 上下文亦已上游化——五段对本层基线 `git apply -R --check`
+#   全部干净通过）。故整条 #DISABLED（文件留着作 F92 决策留痕），能力由上游 182 承载，非降级：
+#   上游 182 与 9042 内嵌 182 逐字节一致（sha 比对见 FIXES F151）；vendor/11 依赖的 916-02 新基线
+#   现由上游提供。见 FIXES F92/F151。
+#DISABLED patches/root/9042-xr1710g-airoha-rx-ring-grow.patch ROOT
+# wifi-scripts 按 radio 独立 txpower（pr-23990/YYH2913；2026-08-17 对 master 重建，源于 fanboy 16 号 41b9e3ac，F13）
+patches/root/9010-wifi-scripts-txpower-ucode.patch ROOT
+# HW GRO/LRO 默认开启（11 号定档 default——README 声明的 HW-GRO/LRO 能力载体；kernel 6.18 编译期验证中）
+patches/vendor/fanboy/11-airoha-lro-default-0e90a420.patch ROOT
+# HSUART 波特率修正（21 号，default；2026-09-12 P6 吸收 fanboy 重基后新增 commit 4e2b80ff）：
+#   父提交与 11 号同主题（net: airoha: enable LRO by default），故紧随其后应用。
+#   内容：an7581/an7583 dtsi 的 hsuart 时钟 7372800→20000000、uart3 compatible 改 en7523-hsuart，
+#   并同步改写 patches-6.18/886-uart-add-en7523-support.patch。缺此修复则 HSUART/GPS 串口波特率错乱
+#   （commit message 实测表：修前 ttyS2 请求 460800 实得 921600）。见 FIXES F133。
+patches/vendor/fanboy/21-hsuart-baud-calculations-4e2b80ff.patch ROOT
+# mt76 token/NPU debugfs 计数器（14 号定档 default——F13 评审基于旧 mt76；F21 复查 2026-08-17：
+#   相对 pin 版 mt76 59676919 已完全上游化——0001 与 debugfs.c:908 逐字一致、0003 的功能性改动
+#   （MCU 采集调用）mac.c:2895-2896 已存在，剩余 diff 只是删除上游已无调用者的死代码 mt7996_mac_sta_poll。
+#   能力保留（上游自带），本层补丁冗余且应用失败——#DISABLED，非降级，见 FIXES F22）
+# fanboy/14 已重建为上方 mt76-0001/0003 并启用；原料桶保留 14 供对照（F22 复核/issue #4）
+# 08 号切片（2026-08-17 F13 收尾：从 vendor/fanboy/08-reliability-compat 切出的六项 default；9014 依赖 9010 先行——
+# 同文件（mac80211.sh）尾部上下文按 9010 后状态重建，应用顺序已在 MANIFEST 固化）
+patches/root/9011-xr1710g-spi33mhz.patch ROOT
+patches/root/9012-xr1710g-banner-colored.patch ROOT
+patches/root/9013-xr1710g-dropbear-quiet-logs.patch ROOT
+patches/root/9014-xr1710g-wifi-antenna-memo.patch ROOT
+patches/root/9015-xr1710g-snd-soc-off.patch ROOT
+patches/root/9016-xr1710g-silence-phy-led-error.patch ROOT
+
+# ── packages：firewall4 / rpcd 缺口（2026-09-14 F158；#EXP 审计 §2.2 第 2–3 项）──
+# 两项都是 **userland 包补丁**（拷进 package/<pkg>/patches/ 由构建期 `patch -f -p1` 应用）：
+#   ① firewall4：`resolve_lower_devices()` 只处理 vlan/bridge，**不管 bonding** ⇒ 桥成员是 bond master 时
+#      `bond0` 会留在硬件 offload flowtable 的 device 集里，per-port offload 驱动看不到真实物理口
+#      （与 SOE LAG/桥卸载同域）。修法：devtype 为 `bonding`（或 `/sys/class/net/<dev>/bonding` 存在）时
+#      沿 `lower_*` 递归展开（作者 Jihong Min）。
+#   ② rpcd：上游 `26dba5206e17`（exec: prevent double close of exec pipe descriptors）把 fd 置 -1 挪到了
+#      `ustream_poll()` 之前 ⇒ poll 看不到 EOF，exec 插件请求一直挂到超时（脚本 `ubus call`/LuCI 命令超时）。
+#      修法：先 poll 再置 -1（保持双 close 保护，作者 Yanghan Ye）。
+# 两项对 pin 真源 `--fuzz=0` rc=0（本仓 tmp/pkgtest 克隆；**且上游 openwrt main 当前 pin 同 SHA**：
+#   firewall4 `b6e5157`、rpcd `e37ed9d`），本仓此前**无载体**（F152 判定的真缺口）。
+# 档位 **default**：① 对无 bond 的 stock 是 no-op（devtype 匹配不到 bonding）；② rpcd 是回归修复，
+#   两档都需要（用户态，不涉内核符号）。
+patches/packages/firewall4-9990-resolve-bonding-lower-devices.patch   package/network/config/firewall4/patches/
+patches/packages/rpcd-0001-exec-observe-EOF-before-invalidating-pipe-fds.patch   package/system/rpcd/patches/
+
+# ── packages：iwinfo txpowerlist（2026-09-14 F159；handoff_p7 §2.2 第 4 项）──
+# iwinfo `nl80211_get_txpwrlist()` 用 `NL80211_CMD_GET_WIPHY`（非 split dump）+ 按**信道**匹配
+# 频率表：多 wiphy/多 band 设备上 txpower 列表会取错 band（freq2channel 跨 band 撞号）。
+# 修法：请求 split wiphy dump，优先按**当前频率**精确匹配，取不到频率才回落到信道匹配；
+# 顺带把 conveyor 所有权理清（nl80211_send 消耗 msg，本地失败路径先 free）。
+# 与 `9052`（freqlist 按 radio 过滤）**同名文件不同函数/行区**（本项 2529-2650、9052 在 3192+），
+# 已**同树合测**：`--fuzz=0` 两个补丁先后应用全过。档位 default（stock 同样受益：txpower 列表错误
+# 与 wiphy 数量无关，单 wiphy 多 band 亦会错）。
+# 来源：YYH2913 `101-nl80211-fix-txpowerlist-wiphy-dump.patch`（2026-09-14 从 tmp/yyh2913-openwrt 取）。
+patches/packages/iwinfo-0101-nl80211-fix-txpowerlist-wiphy-dump.patch   package/network/utils/iwinfo/patches/
+
+# ── 原实验档毕业段 / 剩余实验档（--experimental；毕业并入默认档后取消 #EXP）──
+# 以下 05/06/9024/9026/07/09/17/18 已于 2026-08-31 毕业为默认（ci-74 实机 E1/E2/E3、wifi down/up、NPU 探针通过）。
+# 05 于 2026-09-12 重基到 ubi2-oc 2f4fccb1（包改名 bridge-flow-offload→bridge-hw-offload、新增 init.d/procd
+#   reload trigger；上游 target.mk hunk 以内嵌 eip93 行为上下文，与本仓 02(#EXP) 顺序耦合——已改写为
+#   「文件末尾追加 DEFAULT_PACKAGES」保持与 02 顺序无关）。apply-rules.sh 上游已内置 hw-offload 守门，
+#   原 root/9043 遂整条删除（F123）。
+# 2026-09-14 F157：重取 ubi2-oc 新线 9604ab5a（该文件最后一次变更；第三次 force-push 后 F154 判定的
+#   "5 项内容有差"之一）。新版**只改** hotplug 51-bridge-hw-offload：固定 `sleep 10` → 等 br-lan 端口集
+#   稳定（每 5 s 采一次、连续 3 次一致、上限 120 s）再 apply，注释明写无线 AP 口可能在 lan ifup 之后
+#   很久才入桥（hostapd 启动 / DFS CAC）——旧版 10 s 后端口集未定型就会把 flowtable 生成在残缺成员上
+#   （bridge/offload 场景，F46/F91/9024/9026 同域）。其余 4 文件与旧版**逐字节相同**（`+` 行集合比对，
+#   含 rebase 后的 target.mk hunk 原样保留），仅文件头描述按新版语义更新（"10-second settle time" 已不成立）。
+#   中间态 b397598d（同内容、`sleep 2`）被 9604ab5a 取代，不作为原料。
+patches/vendor/fanboy/05-bridge-offload-22533-9604ab5a.patch ROOT
+# 06 已重取为 ubi2-oc ceffe6acb5 版（2026-09-15 F169）：修掉 3c8d3e6664 版在 nf_ct_bridge_in 的 drop
+#   分支多写的 kfree_skb —— 该 hook 返回 NF_DROP 时由 nf_hook_slow 统一释放（core.c），再 free 一次是
+#   双重释放（全 net/ 树零例）。另两处差异为等价形式：675-02 encap 由"追加+越界检查"回到覆写 encap[0]
+#   （info = {} 且写在 nft_dev_path_info 之前 ⇒ num_encaps 恒 0，结果相同）、ipv6 offset 守卫两层合并
+#   为一行（语义同）。9026 复核通过未动。
+patches/vendor/fanboy/06-nft-flow-offload-l2-22533-ceffe6acb5.patch ROOT
+# 9024：bridge-hw-offload 依赖改为 kmod-nft-offload，规则表名避开用户 fw4 桥表（issue #1 E1/E3）
+patches/root/9024-bridge-hw-offload-deps-table.patch ROOT
+# 9026：bridge 族 nft_flow_offload_init/destroy 复用 inet conntrack 语义（issue #1 E2）
+patches/root/9026-bridge-flow-offload-init-conntrack.patch ROOT
+# 9035：FLOW_STATS=y 与 NPU offload 共存（内核 patch 9995 生成 wrapper）——2026-08-31 ci-88 experimental fresh flash 验证后转 default。
+# 必须在 04 之前应用：04 会把 NET_AIROHA/NPU y->m，而本补丁 config hunk 以 y 为上下文；先应用则 FLOW_STATS=y 保持。
+patches/root/9035-airoha-ppe-flow-stats-coexist.patch ROOT
+# 9036/9037：issue #7 防御补丁族（flow_offloading_hw 1→0→1 + fw4 reload 后整机无声重启）。
+# H1 根因一句话：nf_tables 销毁 hardware flowtable 时逐流 FLOW_CLS_DESTROY 晚于
+# FLOW_BLOCK_UNBIND（cb 已摘除）而永远到不了驱动 → NPU/PPE 固件侧 FOE 与驱动侧条目残留。
+# 9036（9996，方案 A：UNBIND 只置 npu_dirty，重绑后首个命令统一 drain；默认启用）/
+# 9037（9997，方案 B：UNBIND 立即 drain，CPU 直写 SRAM）——二者二选一，勿同时应用；
+# 9037 文件保留为备选：若改选方案 B，把下面 9036 行替换为 9037 行即可。
+# 补丁已入库草案，待 CI 构建验证（2026-09-07）。
+#EXP patches/root/9036-xr1710g-airoha-npu-dirty-lazy-clean.patch ROOT
+# 9038：USXGMII 稳定化（YYH2913 e61a1bb 628：AN7581 RX CDR PR IDAC SDK crossing 搜索——#22397 "No FBCK Lock"
+#       根因域，与 9029 同域互补；625 因依赖 YYH 私有 620/622 未吸收，9993 号段保留待补。2026-09-07 WP-USXGMII，#EXP）
+#EXP patches/root/9038-xr1710g-pcs-usxgmii-stabilize.patch ROOT
+# 9039：PPE 本地流留 CPU（YYH2913 916e91a + hurryman 9990 底座：PACKET_HOST 不走 bridge L2 fallback；
+#       与 9035 同文件不同区。2026-09-07 WP-PPE，#EXP）
+#EXP patches/root/9039-xr1710g-airoha-ppe-keep-local-flows-cpu.patch ROOT
+# 9040：pinctrl force-GPIO（YYH2913 436765d：phy5/phy8 reset pad GPIO46/31 真 mux——基于 master 202-xx/203-01/02
+#       后增量收敛。2026-09-07 WP-pinctrl，#EXP）
+#EXP patches/root/9040-xr1710g-airoha-pinctrl-force-gpio.patch ROOT
+# 9041：RTK SerDes/SDS bundle（742=622 SDS-mode + 743/744 restore/reapply；9001 phy5/phy8 属性同步；
+#       与 9029/9038 PCS 侧互补。2026-09-07 WP-SerDes，#EXP）
+#EXP patches/root/9041-xr1710g-rtk-serdes-bundle.patch ROOT
+# 9044：USXGMII 速率自适应被 else 分支关死（naoki66 625 / Ryan Chen）——上游 airoha_pcs_link_up()
+#   把 RATE_UPDATE_MODE/FORCE_RATE_ADAPT_MODE 段放在 `neg_mode != INBAND_ENABLED` 的 else 里，
+#   而 USXGMII 走 in-band → 速率切换后寄存器停在旧档。直接关联本仓 2026-09-08 验收记录
+#   "PHY 宣告 10G、AN 落 2.5G"。#EXP（本仓构建树内层未实跑）；实机判据见 FIXES F93。
+#EXP patches/root/9044-xr1710g-pcs-usxgmii-rate-adaptation.patch ROOT
+# 9045：RX 环停顿恢复 + RX_NO_CPU_DSCP/q31 中断 + QDMA TX BQL UAF + thermal 两处 1 行 bug
+#   （Gilly 981/980/976/957/960/961；与 9042 的 DMA 越环不同 hunk，互补）
+#EXP patches/root/9045-xr1710g-airoha-rx-recover-irq-thermal.patch ROOT
+#EXP patches/vendor/fanboy/02-eip93-f80d0507.patch ROOT
+#EXP patches/vendor/fanboy/04-dsa-kmod-netlink-22532-aa531917.patch ROOT
+# 9029：lan2 10G JCPLL VCO TCLVAR recal（IP10/A8，experimental；2026-09-07 按 rdmitry PR#143 机制重写：
+#       post_config hook（仅 an7581_pcs_eth）+ TCLVAR 0x3→0x5 脉冲 + ETH/PON 分值 0x5/0x3；
+#       旧版（bringup 内同值重写=HW no-op，devmem 0x1fa7a030 证据）已失效；实机 10G 对端验证后毕业 default）
+#EXP patches/root/9029-xr1710g-airoha-pcs-jcpll-tclvar-recal.patch ROOT
+# 07：mt7996 HW_RRO 会话释放（BA teardown 发 UNI_RRO_DEL_BA_SESSION）——**fanboy 新线已无此料、本仓 default 保留**（F175）：
+#     fanboy 新线 mt76 pin 与本仓**同一提交** `01367e60`（= `patches/root/9067-…`），而该 pin 的 `mt7996/mcu.c` 与
+#     `openwrt/mt76` master **逐字节相同**（sha256 17d19d23…）⇒ 既非「上游已修」也非「换法」；新线无等价补丁、07 的
+#     patch-id 零命中。删除门槛（可核，二者任一出现才可删）：① BA teardown 路径释放 RRO 会话（RX_STOP 带会话 id +
+#     UNI_RRO_DEL_BA_SESSION）；② 亚 64 窗口不再启用 HW_RRO（`ba_rdd_rro` 带 `buf_size >= 64`）。详见 F175 行。
+patches/vendor/fanboy/07-mt76-release-hw-rro-session-5b917d4b.patch ROOT
+patches/vendor/fanboy/09-hw11-hw21-compat-afc6dc93.patch ROOT
+patches/vendor/fanboy/17-cmonroe-stability-8c530f05.patch ROOT
+patches/vendor/fanboy/18-smartrg-stability-b45d5117.patch ROOT
+# 9046（必须在 18 之后）：修 992-20 内层 hunk#3 的上下文——它写死 `RX_IRQ1_BANK_PIN_MASK 0x7fe00000`，
+#   而实验档的 9045 内层 976 已把该值改为 0xffe00000 → 严格上下文失配，992-20 整份 patch 失败
+#   （ci experimental run 34625416045 实测：Hunk #3 FAILED at 526，kernel prepare 阶段 Error 1）。
+#   本补丁仅同步该上下文值（**语义不变**：992-20 仍改 RX_IRQ0 0x839f→0xbb9f）。
+#   ⚠ 2026-09-12 修正：必须为 #EXP —— 该上下文**只在实验档**被 976 改成 0xffe00000；
+#   default/stock 档源码仍是 0x7fe00000，原先无条件应用会把内层 992-20 的上下文改坏，
+#   导致 stock 构建在 kernel prepare 阶段 Hunk #3 FAILED（run 34658979893/34658934256 实证）。
+#EXP patches/root/9046-xr1710g-fix-992-20-context.patch ROOT
+# 9048：airoha_ppe_flush_sram_entries() 内层 `int err;` 遮蔽 → 恒返回 0（Gilly 949，
+#   2026-09-12 吸收；B2 逐行核对推翻"已覆盖"的假阳性）。default 档：1 行级零风险真 bug，
+#   与本文件其它补丁（9035/9036/9037）区段不相交，内层对 6.18.44 真源实证可应用。
+#   实机判据：SRAM FOE 刷写失败时 airoha_ppe_init 能拿到真实 errno（而非静默成功）。
+patches/root/9048-xr1710g-airoha-ppe-flush-sram-err.patch ROOT
+# 9049：mt76 per-STA debugfs 被编译掉的根因修复（2026-09-12 吸收；B2 发现，上游无此映射）。
+#   mt76 走 backports 构建，autoconf 只有 CPTCFG_MAC80211_DEBUGFS，而源码用 #ifdef
+#   CONFIG_MAC80211_DEBUGFS（pin be5ce791 共 6 处）→ 全部被编译掉。补上 NOSTDINC_FLAGS 映射，
+#   与同文件 MESH/TESTMODE 写法一致，**按 CONFIG_PACKAGE_MAC80211_DEBUGFS 条件开**：
+#   默认档不改变镜像（该包默认未开），需要 per-STA debugfs 诊断时在 seed-config 打开即可。
+#   同时是 Gilly 038（per-link sta stats debugfs）的前置——不修映射，038 是死代码。
+patches/root/9049-xr1710g-mt76-mac80211-debugfs.patch ROOT
+# 9067：mt76 **主源换代** —— 改指 fanboy fork 的固件提交 01367e60（2026-09-14 F161 落地，default 档）。
+#   快进式：be5ce791 + **恰好 1 个提交**（`01367e6 new mt7996 family firmware`），`22 files changed,
+#   0 insertions(+), 0 deletions(-)`、全是 firmware/mt7996/*.bin ⇒ 换代不改一行驱动源码。
+#   生产固件净 −65 124 B；新增 ≈8.8 MB 是驱动 MT7996/92/90_FIRMWARE_* 常量**不引用**的
+#   *_wm_tm*.bin（产线测试模式，全树 `grep '_tm\.bin'` 零引用）⇒ 不进运行时路径。
+#   关键：`PKG_MIRROR_HASH` 填 **官方 dl_github_archive.py 算出的真实 sha256**（983ba810…），
+#   **不是** fanboy 原样的 `skip` —— 后者正是本仓此前否决 vendor/fanboy/13 的理由
+#   （ORDER pending：「# 否决（fork + PKG_MIRROR_HASH=skip，违反锁源铁律）」）；F161 决策点①
+#   以「已知答案自检（现行 pin 复现 d1d0f758…）+ 负对照 exit 1」解除，并顺带把下载路径从
+#   rawgit（clone-then-pack、无校验）切回 github_archive（双向 sha256 校验）。
+#   `PKG_SOURCE_DATE` 保持 2026-09-01（hash 经 SUBDIR 依赖它，改 DATE 必须重算）。
+#   前置 = F163（mt76 校验 URL 改为从包 Makefile 派生，否则换代后 404 且静默降级）。
+#   判据：两档 CI（stock + experimental）+ 实机 docs/DEVICE-VALIDATION.md V7.0–V7.6（CI 绿不能代替）。
+patches/root/9067-xr1710g-mt76-source-01367e60.patch ROOT
+# 9050（#EXP）：airoha GDM MIB 采集无损化（Gilly 963，2026-09-12 吸收）。64 位计数器被 `+=` 累加
+#   （硬件已累计 → 统计虚增）、32 位计数器无绕回处理（绕回后倒退）、RUNT/E64 混桶；另加 port->lock。
+#   影响 F38 的 rx_errors 判定口径。改的是对外可见统计语义 → #EXP，实机验证后毕业。
+#   顺序：9025（内层 9991）之后，全序实测可应用。
+#EXP patches/root/9050-xr1710g-airoha-mib-stats-lossless.patch ROOT
+# 9051（#EXP）：GRO fraglist 套 GSO 的嵌套缺陷（Gilly 993，MediaTek netdev v5，**上游未合**）。
+#   本仓 vendor/11 默认开 NETIF_F_GRO_HW + 上游 hack-600 默认开 GRO_FRAGLIST → 路径命中；
+#   修 `is_flist = !sk && !skb_is_gso(skb)`，避免 fraglist GRO 作用于 HW-GRO 包导致 Tethering
+#   转发时 IP 分片/丢包。合入上游即删。
+#EXP patches/root/9051-xr1710g-gro-fraglist-gso-nesting.patch ROOT
+# 9052（default）：iwinfo freqlist 按 radio 过滤（Gilly 700，2026-09-12 P2 吸收）。
+#   单 wiphy 多 radio 下 freqlist 返回整个 wiphy 的所有 band → LuCI 信道分析 5G/6G 页无数据。
+#   上游 iwinfo 的 100-multi_radio.patch 只加 nl80211 枚举与 radio_idx，未过滤 freqlist → 非重复。
+#   装到 package/network/utils/iwinfo/patches/200-freqlist-per-radio.patch；全序实测
+#   （100-multi_radio → 本项）干净应用。与 Gilly 998（LuCI 页面侧）互补。
+patches/root/9052-xr1710g-iwinfo-freqlist-per-radio.patch ROOT
+# 9053（#EXP）：xfrm packet-offload manager 框架（hurryman2212 @offload-oc A 系列 9 补丁，
+#   2026-09-12 P2 吸收）。为 SOE/EIP93 接管 ESP 发送路径的基础设施；对 kernel 6.18.44
+#   真源全序 9/9 实证可应用。单独落地不产生 IPsec 加速（需配 9054 + B 系列 SOE 主体）。
+#EXP patches/root/9053-xr1710g-xfrm-packet-offload.patch ROOT
+# 9054（#EXP）：EIP93 动态软件回退（hurryman2212 @offload-oc D 系列 4 补丁 + 1 backport，
+#   2026-09-12 P2 吸收）。**正面解开 F52（issue #6）**：EIP93 能加速的走硬件、不能的（如
+#   GCM/rfc4106）透明回退软件。真源全序 5/5 实证可应用（新增 eip93-fallback.{c,h} 并入 Makefile）。
+#   依赖 vendor/fanboy/02（EIP93 驱动，同为 #EXP）。
+#EXP patches/root/9054-xr1710g-crypto-eip93-dynamic-fallback.patch ROOT
+# 9060（#EXP）：9054 的**打包侧配套** —— modules/crypto.mk 补 eip93 新模块的包定义。
+#   9054 让 eip93 产出第二只模块 `fallback.ko`（eip93-fallback.o）+ crypto 新增
+#   `crypt-benchmark.ko`/`fallback.ko`，但 OpenWrt 包定义未同步 → 实验档打包报
+#   "Package kmod-crypto-hw-eip93 is missing dependencies for the following libraries: fallback.ko"
+#   → modules/crypto.mk:549 Error 1（CI run 34669202875 实测）。本补丁新增
+#   KernelPackage/crypto-benchmark + crypto-dynamic-fallback，eip93 加 +kmod-crypto-dynamic-fallback
+#   并去掉被动态回退取代的两个静态阈值 KCONFIG，crypto-test 加 +kmod-crypto-benchmark。
+#   **与 9054 必须同档**（否则内核有模块而包里没有，或反之）。
+#EXP patches/root/9060-xr1710g-crypto-eip93-package-deps.patch ROOT
+# 9062（#EXP）：EIP93 三处可靠性修复（YYH/backport-6.18 9915/9916/9918，2026-09-12 P3-E 对账残余；
+#   内层 9999-40..42）：① guard DMA cleanup on uninitialized mappings（send_req 失败路径漏 free_sa_state
+#   + 未映射基址被无条件 dma_unmap_single）；② reject HMAC requests before setkey（ipad 全 0 时仍提交硬件）；
+#   ③ order result descriptor reads after PE_READY（dma_rmb + 用已读入的 pe_ctrl_stat）。
+#   同族 9910（纯注释 email 少 `>`）/9912（ECONET 选型）/9990 hack（阈值，已被 9054 动态回退取代）均不携带。
+#   同档：vendor/02（EIP93 驱动）+ 9054（动态回退）+ 本项 均为 #EXP。
+#EXP patches/root/9062-xr1710g-eip93-reliability.patch ROOT
+# 9065（#EXP）：EIP93 request ID 耗尽处理（YYH/backport-6.18 **9919**，作者 Jihong Min/hurryman2212；
+#   2026-09-13 F156 吸收；内层 9999-43）。旧码用**环深**当 IDR 上限且不检查分配失败 ⇒ 请求压力下把
+#   负错误值当 user ID 编进描述符；修法：全 user ID 范围分配 + IDR 满则等 + 映射/ID 都成功后才发布
+#   描述符 + 映射回滚 + 中断容忍陈旧/缺失 ID。**F152 审计确认的唯一"真残余且可干净应用"项**
+#   （kreal3 模型树 `--fuzz=0` 7/7 hunk；同族 9915/9916/9918 已由 9062 覆盖，9913/9914 真源不存在）。
+#   顺序：glob 序 9999-43 > 9999-40..42（依赖 9062 之后的上下文）→ 9065 必须置于 9062 之后。
+#   本地收口（2026-09-14）：审计 129/129；dry-run 处理 129 / 跳过 0 / 缺失 0 + 拷贝类 4/4；
+#   内层对 kreal3 模型树 `--fuzz=0` rc=0（5 文件）。CI 实证见 docs/FIXES.md 的 F156 行。
+#   同档：vendor/02 + 9054 + 9060 + 9062 + 本项 均 #EXP（缺一不可）。
+#EXP patches/root/9065-xr1710g-eip93-request-id-exhaustion.patch ROOT
+# 9066（#EXP）：EIP93 **请求本地 SA record**（YYH/backport-6.18 **9917**，作者 Jihong Min/hurryman2212；
+#   2026-09-14 F162 重基吸收；内层 9999-44）。cipher/AEAD 请求把可变的 direction/copy 标志直接写在
+#   **tfm 级** SA record 上（decrypt 路径就地 `|= EIP93_SA_CMD_DIRECTION_IN`）⇒ 同一 tfm 上的并发
+#   请求会把 decrypt 标志泄漏给 encrypt（SA record 串味、并发结果错误）。修法：SA record 复制进请求
+#   上下文、请求特定标志只改副本、按请求 DMA 映射并在完成/失败路径 unmap、cra_exit 去 ctx 级 unmap、
+#   删除 ctx 级 sa_record_base 字段。**F160 判"不吸收·重基配方"→ F162 按配方落地**：冲突面只是上下文
+#   （本仓基线自带 openwrt 内核补丁集的动态软回退使 cipher.c hunk #4/#5/#7 错位），本次重基**逐行保留**
+#   软回退分支（fallback 命中仍直接走软件实现、不触碰 SA record），其余照 9917 原样；aead.c 的 9917
+#   目标态本就存在（hunk 全过）⇒ 本项只改 cipher 路径 + 公共 unmap 路径。
+#   顺序：改 eip93-cipher.{c,h} 与 eip93-common.c 的 unmap 路径，与 9999-40..43 不重叠；glob 序 9999-44。
+#   本地三证（2026-09-14）：审计 133/133（`--oc` 62/62）；dry-run 处理 133 / 跳过 0 / 缺失 0 + 拷贝类全过；
+#   内层对 kreal3 模型树 `--fuzz=0` **16/16 hunk 干净应用、零 offset、零 fuzz**，应用后四文件与逐行移植
+#   终态**逐字节相同**（`tmp/9917/`）。CI 实证见 docs/FIXES.md 的 F162 行。
+#   同档：vendor/02 + 9054 + 9060 + 9062 + 9065 + 本项 均 #EXP（缺一不可）。
+#EXP patches/root/9066-xr1710g-eip93-request-local-sa-records.patch ROOT
+# 9055（#EXP）：AN7581 PCS RX-lock **诊断**（naoki66 原作 + orangeyoo kernel/0923 v1.6.1 抑噪版，
+#   2026-09-12 P2 吸收）。F93（PHY 宣告 10G / AN 落 2.5G）与 F81（#22397 LAN2 No FBCK Lock）
+#   都卡在"PCS 无 carrier 时看不出是对端没信号还是 CDR 没锁"这一盲点；本项提供可判读证据：
+#   打 PCS/Base-R/AN/SigDet/FreqDet/reset 寄存器，区分 `action=no-signal` 与 `action=cdr-reset`
+#   并累计 resets。**抑噪是硬约束**（早期版空置 WAN 口 ~2 行/秒刷屏，8 分钟冲空 logread 环形
+#   缓冲挤掉 hostapd 历史）——本版 no-signal/AN down 每周期只打一次，cdr-reset 仍每次打印。
+#   同域互补：9029（JCPLL TCLVAR recal）/9038（USXGMII RX CDR crossing）/9044（rate adaptation）
+#   治"能不能起来"，本项治"为什么起不来"。双向顺序共存已实证（终态 sha256 一致）。
+#EXP patches/root/9055-xr1710g-pcs-rxlock-diagnostics.patch ROOT
+# 9057（default）：MLO 编辑页隐藏 mode=mesh 接口（orangeyoo luci/0660，2026-09-12 P2 吸收）。
+#   MLO 页把所有 wifi-iface 列进可编辑 AP/STA 网格 → 选中 802.11s mesh 回程会被通用表单
+#   改写 mode/ssid/network，6GHz 回程静默断开。改的是本仓 9017 生成的文件
+#   `luci-app-mlo/htdocs/.../mlo.js`，故**必须置于 9017 之后**；内层装到
+#   `luci-app-mlo/patches/001-xr1710g-mlo-hide-mesh.patch` 由构建期应用。
+#   实证：对抽取出的 9017 mlo.js（693 行）`patch -p1 --fuzz=0` 两个 hunk 干净命中
+#   （插入点与 0660 逐字吻合）。纯前端只读过滤+提示，本仓当前无 mesh 接口 → 现网零影响。
+patches/root/9057-xr1710g-mlo-hide-mesh.patch ROOT
+# 9058/9059（#EXP）：hwrng/TRNG 先开 SCU 时钟门再置 RNG_EN|RNG_OSC_EN（2026-09-12 P2 吸收）。
+#   9058 改驱动（drivers/char/hw_random/airoha-trng.c）：加 SCU regmap 句柄 + 三道时钟门
+#   （BUS_CLK_GAT bit3 / PER_CLK_GAT_1 bit21 / PER_CLK_GAT_2 bit0）**先于** TRNG 使能；
+#   9059 改 DTS/绑定：SCU 节点下加只覆盖时钟门寄存器段的 syscon 子节点，TRNG 节点加
+#   `airoha,scu` 句柄（并补 rng 绑定的该属性）。**两者必须同档**。
+#   来源：naoki66 原作 / orangeyoo kernel/0921（v1.6.1 顺序修正）+ OpenWRT-fanboy PR#1 18/18
+#   （经 yyh2913-patches 920 的 SCU 上下文）——缓存 0921 依赖 920 引入的 `RNG_OSC_EN`/`trng->scu`，
+#   在本仓真源上畸形失败，故按真源重写为一份自洽补丁（不含 920 的 DRBG 输出改动）。
+#   实证：对 kernel 6.18.44 真源 `patch -p1 --fuzz=0` 干净应用。收益概率低（作者自述需两台机
+#   反复冷启动），故 #EXP；判据见 FIXES F120。
+#EXP patches/root/9058-xr1710g-hwrng-scu-clock-order.patch ROOT
+#EXP patches/root/9059-xr1710g-hwrng-scu-dts.patch ROOT
+#EXP patches/root/9059a-xr1710g-hwrng-scu-dts-target.patch ROOT
+#EXP patches/root/9059b-xr1710g-soe-dtsi-target.patch ROOT
+# 9047：PPE flow bind rate 30→8 + debugfs 旋钮（2026-09-12 调研吸收；来源 openwrt 论坛 t/222776 #3890
+#   NoTengoBattery/Oever González，2026-09-04，与本仓 F79=mt76-0011 同一作者同帖的 Patch 2）。
+#   vendor 默认 0x1e(30) 高于交互流包速率 → 游戏/VoIP/延迟探针永不绑定，与批量卸载并存时吃 60-250ms 尖峰；
+#   实测 32→loaded p90 157ms(30%>40ms)、8→15ms(0%)，bufferbloat B→A+。内层 9997（置于 9039 内层 9990
+#   之后：同 airoha_ppe.c 但区段不相交——9990 改 853/1046/1057，本项改 136/223，全序真实应用已实证）。
+#   实机判据见 FIXES F104。
+patches/root/9047-xr1710g-airoha-ppe-bind-rate.patch ROOT
+# 「dhcpv6 双客户端互斥」（F118，orangeyoo 0103+0104）：**无补丁载体，纯 rootfs overlay**（9056 已于
+#   2026-09-13 F139 整条删除）。问题：本仓 files/etc/config/network 预置 `config interface 'wan6'
+#   { proto 'dhcpv6' }`；用户切 PPPoE 后 PPP 的 ipv6=auto 再建一个动态 DHCPv6（ppp6-up 的 AUTOIPV6
+#   路径）→ 两个 odhcp6c 跑同一 L3 设备，而 ubus 对象名固定 `odhcp6c.<设备>` → 第二个
+#   ubus_add_object EEXIST → 退出 → netifd 重启 → IPv6 间歇不可用（**已文档化的操作路径**）。
+#   载体全部在 overlay：`files/lib/netifd/xr1710g-dhcpv6-guard.sh`（双向查冲突，只让后到的 netifd
+#   客户端不启动；绝不杀无 INTERFACE= 的第三方 odhcp6c）+ `files/lib/netifd/ppp6-up`（AUTOIPV6 前
+#   查显式 dhcpv6）+ `files/lib/netifd/proto/dhcpv6.sh`（proto_dhcpv6_setup 入口去重）。目标路径必须
+#   逐字符等于 rootfs 绝对路径去掉前导 `/`（F136 修过少 `proto/` 的错）。
+#   为什么不能做成包补丁：`patch -f -p1 -d PKG_BUILD_DIR` 的目标是**解包后的上游源码**，既看不到包
+#   `files/`，也看不到 OpenWrt 包定义 Makefile —— 原 9056 的 4 份内层（001 guard 段 + 002
+#   PKG_RELEASE bump）全部无效，F135/F136 两次修补仍未脱出该机制（见 F139）。若确实要 opkg 版本号
+#   bump，正确形态是 root 档补丁直接改 `package/.../Makefile`（同 9017 的做法）；本项由镜像 overlay
+#   投递、不依赖包重装，故不需要。判据见 FIXES F118/F139。
+# 9061（#EXP）：airoha NPU mailbox 可靠性闭环（YYH2913 xr1710g-6.18-integration 923..928，
+#   2026-09-12 P3-A 吸收；内层 9999-30..35）。六项：recover stalled cores（暴露
+#   airoha_npu_recover()）/ watchdog work lifetime（devm cancel action + airoha_npu_wait_recovery()）/
+#   recovery 同步竞争（atomic recovering）/ offload provider device link 生命周期（AUTOREMOVE_CONSUMER）/
+#   WLAN RX IRQ 只 ack 请求位（防一个 ring 清另一个 ring 的 pending）/ mailbox 命令先于门铃
+#   （先 CTRL3 再自增 CTRL2，修 probe 固件版本 0.0）。**P3-B（mt76 0147/0155）硬前置**。
+#   同族 924-use-coherent 已由上游 openwrt main 收录 → 不重复携带（F124）。
+#   实证：6.18.44 真源 + 本仓 airoha 内层全序上 6 个内层逐个 fuzz=0。
+#EXP patches/root/9061-xr1710g-airoha-npu-mailbox-recovery.patch ROOT
+
+# ── 待拆分/评审后解锁（原料桶已有，见 FIXES F13/F14）──
+# 08-reliability-compat：2026-08-17 切片完成——六项（SPI33MHz/banner/dropbear/antenna-memo/snd-off/LED-silence）
+#   已切为 patches/root/9011-9016 入 default（上方活动行）；feeds.conf.default 与 w1700k dts LED 改动否决
+#   （ADR-0001 master 保真 + 非目标设备）。原料桶保留 08 原 patch 供对照（不再应用）。
+# 19-w1700k-apps-pack：2026-08-17 精简为 19-core（patches/root/9017，去 fastfetch/netspeedtest 两包，
+#   保留 npu/flowsense/mlo/fancontrol/wifi7）；2026-09-12 P4 更新原料为 0a4f2632de（配套 flowsense
+#   增量 commit 8bf1c9253c，已并入 9017）。
+# 12-lorenzo-airoha-patches：调试脚本 + NPU ser + usb-pcie 杂项 → 维持实验档候选，不默认。
+# 13-mt76-plus-firmware：否决（PKG_SOURCE_URL 指向个人 fork 且 PKG_MIRROR_HASH=skip，违反锁源/可复现铁律）
+# 15-txpower-control：与默认 mt76/0006-0007 功能重复（fanboy 旧谱系）→ 仅备选对比，不启用
+# 16-wifi-scripts-txpower-ucode：原版参考（pr-23990）；已对 master 重建为 root/9010（唯一失效资产，F13）
+# 01-vermagic-inject 与 20-oc-governor 见 F14/F08（01 待评估；20 为 fanboy 原版参考不直接应用）
+# patches/vendor/fanboy/01-vermagic-inject-85005e10.patch ROOT
+# patches/vendor/fanboy/20-oc-governor-200mhz-ed7cbc80.patch ROOT
+
+# ── SOE 主体（B 系列，19 个补丁；#EXP 捆绑）────────────────────────────────
+# 来源：hurryman2212/OpenW1700k-test @offload-oc（tip 73c3ab3081）target/linux/airoha/patches-6.18/9999-10..28，
+#   2026-09-12 P2 吸收（handoff §2.9）。让 AN7581 的 **SOE** 做 inline IPSec（含 NAT-T）：
+#   XFRM state 经 nft flowtable 下发 PPE/SOE，数据面硬件加解密 —— issue #6 / F52 的终点。
+# **依赖链**：A=xfrm packet-offload 框架（9053，本仓已有）+ D=EIP93 动态软回退（9054，本仓已有）
+#   + B=本捆绑；**三者同档才有完整意义**。另有两条构建期前置（都已在真实构建里先于本捆绑应用）：
+#   ① `9039` 内层 `9990`（airoha_ppe.c 的 bind-WLAN / subflow 重构）——本捆绑的 25 已按其形态适配；
+#   ② `yyh2913 179`（shared QDMA TX ring BQL/UAF，引入 `airoha_queue.flushing`）——B14 的上下文前提。
+# **重基**：原作者基线 ≠ 本仓真源（差异：ppe 重构、QDQ start/stop helper 化、flowtable 侧无
+#   `net/xfrm.h`/函数名不同/`nft_dev_forward_path()` 返回 void）。19 个补丁逐个按真源重写上下文/锚点，
+#   其中 25 的 2 个 hunk 在"真源+9990"上重锚。逐条处置见 research-20260912/inner/soe-rebased/*.patch
+#   顶部 `# Reason:`，重基工具与验收脚本见 research-20260912/inner/。
+# **实证**：真实构建顺序（airoha 全序 168 + 179 + 9039/9990 + 9053/9054 内层 + 本 19 个）上
+#   **逐个 `patch -p1 --fuzz=0` 全部干净应用**（0 FAILED，`soe-basetree.sh`/`gen-25-real9990.py` 可复现）；
+#   终态新增 `drivers/net/ethernet/airoha/airoha_soe.{c,h}`、`NET_AIROHA_SOE`、数据面/flowtable/PPE 钩子。
+# **判据（实机）**：① 构建通过（experimental）；② `ip xfrm state add` 后 devmem/debugfs 看 SOE/PPE 计数增长；
+#   ③ `authenc(hmac(sha256),cbc(aes))`（硬件）vs `rfc4106(gcm(aes))`（软回退，9054 保证）；
+#   ④ iperf3 over IPsec 吞吐 vs 软件路径；⑤ 开 IPsec 卸载后普通转发/无线不回归。台账见 FIXES F122。
+#EXP patches/root/9999-net-airoha-soe-10-dt-bindings-en7581-soe.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-11-maintainers-soe-binding.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-12-dtsi-en7581-soe-node.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-13-soe-ppe-ipsec-registers.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-14-soe-state-datapath-metadata.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-15-soe-ppe-driver-interfaces.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-16-integrate-soe-eth-datapath.patch ROOT
+# SOE-14 加宽了 airoha_ppe_setup_tc_block_cb 声明、SOE-16 改了调用点，定义那半在 SOE-25；本补丁
+#   补齐定义 + ops 字段 + inline 助手 + #else 桩。台账见 FIXES 的 F134 行。
+# 2026-09-13（F142）：SOE-17..28 转 #EXP 后，SOE-24/25 已自带本补丁的全部四处改动（24 = airoha_offload.h
+#   的 ops 字段/inline 助手 + ft 助手/#else 桩；25 = airoha_ppe.c 的定义加宽 + is_flowtable 透传），
+#   2026-09-13 F150：24/25 曾随 17..28 回退 gate ⇒ 本项当时恢复 #EXP（签名定义半边又只能由它补）。
+#   同日 F150 续：24/25 修复并重新启用后，本项交回 #DISABLED（其四处改动已全数由 24/25 自带，见 F150）。
+#DISABLED patches/root/9999-45-airoha-ppe-setup-tc-block-cb-signature.patch ROOT
+# ── SOE B 系列 17..28（2026-09-13 F142 由 #DISABLED 转 #EXP）──
+#   原 gate 理由（"依赖更新上游内核的 nft_flow_route_routing"）经复查不成立：作者基线的
+#   nft_flow_route_routing()/nft_flow_route_bridging() 拆分与 int 返回的 nft_dev_forward_path()
+#   都来自**作者侧更新的上游**；本仓真源（vanilla 6.18.44，与 kernel-base 058cfa7 逐字节相同）
+#   只有 nft_flow_route()。20 号已按真源（含 vendor/fanboy/06 的 675-01..03 —— 上游 master 有、
+#   kernel-base 无，故必须在树内按真实序重锚）二次重基；其余 11 支在本仓真实应用序
+#   （backport→pending→hack→airoha target，include/quilt.mk:102-105）上 fuzz=0 全绿。
+#   ⚠ 2026-09-13 F150：**转 #EXP 后 CI 暴露真因，已回退 gate**——① 这些代码此前从未编译过（见 9064），
+#     一旦启用就暴露：16 号新增的 `airoha_qdma_xmit_skb()` 引用本仓基线没有的 API（yyh2913 179 全量版的
+#     `q->flushing`、181 的 `dma_type`/`AIROHA_DMA_MAP_*`/`airoha_unmap_xmit_buf`）；② 25 号的
+#     `airoha_ppe.c` 区在 P2/P5 重基时留下**结构性残缺**（重复函数尾、丢失的 npu 查表块、把作者树上下文
+#     当新增行的 `struct airoha_ppe_fdb_work {`、以及 `airoha_ppe_foe_*` 段多处多余 `}`），启用后编译必炸。
+#     修复清单与复现方法见 FIXES F150 与 research-20260912/inner/MODEL-CHECK-F150.md。
+#     16/25 的**低成本修点已落地**（16 按基线等价改写 4 处、25 补 include 并删掉 3 处残缺），
+#     剩下的 25 号 `airoha_ppe_foe_*` 段需要一次**正经重基**（对真源逐 hunk 重锚）后才能再启用。
+#   ✅ 2026-09-13 F150 续（同日修复）：25 号 `airoha_ppe_foe_commit_subflow*` 段误删的真源上下文逐行改回后，
+#     模型结构体检 `airoha_ppe.c`/`airoha_eth.c`/`airoha_soe.c` 花括号深度均 0、异常 0 ⇒ 17..28/9063/9064
+#     **重新转 #EXP**、9999-45 交回 #DISABLED；run `34752142233`（`f09ca19`）experimental 全绿、release `ci-159`
+#     （`airoha_soe.o` 编入、`: error:` 0）。仍留：25 号 `airoha_ppe.c` 为保留作者 TX 语义的逐 hunk 正经重基
+#     = 未来可选工作，非当前阻塞。
+#EXP patches/root/9999-net-airoha-soe-17-flow-offload-xfrm-actions.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-18-flowtable-xfrm-route-metadata.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-19-flowtable-retain-xfrm-input.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-20-flowtable-discover-xfrm-state.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-21-flowtable-xfrm-hw-actions.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-22-flowtable-keep-xfrm-off-sw-path.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-23-flowtable-admit-authed-xfrm.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-24-flowtable-ctx-offload-api.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-25-autonomous-soe-xfrm-offload.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-26-soe-xfrm-packet-offload.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-27-build-soe-provider.patch ROOT
+#EXP patches/root/9999-net-airoha-soe-28-soe-offload-kconfig.patch ROOT
+# ── SOE LAG（bonding 多口共享 XFRM 硬件状态）——作者 LAG 系列 9999-29..38（2026-09-13 F142 第二批）──
+#   内层安装名统一为 `9999-xfrm-lag-NN-*`，前缀保证整块排在 9053 内层
+#   `9999-xfrm-00-packet-offload-framework.patch` 之后（29/30 的 hunk 上下文用到 A 系列新增的
+#   `xdo_dev_packet_xmit` / `struct xfrmdev_ops.flags`）且排在 `9999-net-airoha-soe-25/26` 之后
+#   （36..38 改 `airoha_soe.{c,h}` 与 `airoha_ppe.c`）。为此 9053 内层由
+#   `9999-xfrm-packet-offload-framework.patch` 更名为 `9999-xfrm-00-…`（仅文件名，内容零改动）。
+#   实测（research-20260912/inner/klag）：10 支在含 9053 + SOE-17..28 的真实树上 `--fuzz=0` 全绿。
+#   ⚠ F150：LAG 的 36..38 依赖 SOE 主体（airoha_soe.{c,h} 由 26 提供）⇒ 曾随 17..28 一并回退 gate；
+#   同日修复后随 17..28 重新启用（当前 #EXP）。
+#EXP patches/root/9063-xr1710g-xfrm-lag-shared-state.patch ROOT
+# ── SOE 的配置启用半边（2026-09-13 F149）──
+#   SOE-28 的 `config NET_AIROHA_SOE`（带 prompt、select XFRM_OFFLOAD）**无人 select** ⇒
+#   不在 target 片段里置 y，27 号的 airoha_soe.o 与 14/15/16/25 的 SOE 钩子全部不编译
+#   （都在 #if IS_REACHABLE(CONFIG_NET_AIROHA_SOE) 内）——功能为零且 CI 证不到编译。
+#   同档 #EXP，与 9035 的 FLOW_STATS 同文件不同区。
+#   ⚠ F150：本项只为启用 17..28 的编译；SOE 曾回退 gate 时本项一并回退（否则指向不存在的符号）；
+#   同日修复后随 17..28 重新启用（当前 #EXP）。
+#EXP patches/root/9064-xr1710g-soe-kconfig-enable.patch ROOT

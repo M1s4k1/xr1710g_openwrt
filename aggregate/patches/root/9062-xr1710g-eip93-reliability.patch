@@ -1,0 +1,227 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9915/9916/9918
+#   （openwrt eip93 系列，Christian Marangi）—— 2026-09-12 P3-E patch-id 对账残余吸收，#EXP
+# Upstream: n/a（未进 backports；同族 9910 为纯注释（email 少 `>`）→ 不携带；9912 ECONET 选型对本仓无意义 →
+#   不携带；9990 hack（AES fallback 阈值）已被本仓 9054 的动态软回退取代 → 不携带）
+# Reason: EIP93（AN7581 crypto）三处可靠性修复（内层 9999-40..42）：
+#   40 guard DMA cleanup on uninitialized mappings（send_req 失败路径漏 free_sa_state + 未映射基址被无条件 unmap）
+#   41 reject HMAC requests before setkey（未 setkey 时 ipad 全 0 → 用全零密钥做 HMAC）
+#   42 order result descriptor reads after PE_READY（dma_rmb + 用已读入的 pe_ctrl_stat）
+# 档位 #EXP：EIP93 是本仓 #EXP 资产（vendor/02 驱动 + 9054 动态回退）的同一层；三者同档才有意义。
+#   实测判据：`grep eip93 /proc/crypto` 且 IPsec/加密路径稳定；无 eip93 相关 dmesg 告警。
+diff --git a/target/linux/airoha/patches-6.18/9999-40-crypto-eip93-guard-dma-cleanup.patch b/target/linux/airoha/patches-6.18/9999-40-crypto-eip93-guard-dma-cleanup.patch
+new file mode 100644
+index 0000000..2db2cc4
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-40-crypto-eip93-guard-dma-cleanup.patch
+@@ -0,0 +1,153 @@
++# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9915-crypto-eip93-guard-DMA-cleanup-on-uninitialized-mappings（2026-09-12 P3-E patch-id 对账残余吸收）
++# Upstream: n/a（Christian Marangi / openwrt eip93 系列；未进 backports）
++# Reason: eip93_send_req() 在 sa_state 分配失败时直接 return -ENOMEM，跳过了 free_sa_state 清理路径（此前已建立的 DMA 映射/资源泄漏）；另 sa_state_ctr_base/sa_state_base 未初始化即可能被 cleanup 使用 → 显式置 0。eip93_hash_free_data_blocks()/free_sa_record() 对未映射的 data_dma/sa_record_base/sa_record_hmac_base 无条件 dma_unmap_single → 加基址非 0 守卫。
++# 实证：linux 6.18.44 真源 + 本仓 EIP93 层（vendor/02 驱动 + 9054 动态回退）之上应用成功。
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-common.c b/drivers/crypto/inside-secure/eip93/eip93-common.c
++index 4c163d7281b3..ed46730c36bc 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-common.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-common.c
++@@ -527,6 +527,8 @@ int eip93_send_req(struct crypto_async_request *async,
++ 
++ 	rctx->sa_state_ctr = NULL;
++ 	rctx->sa_state = NULL;
+++	rctx->sa_state_ctr_base = 0;
+++	rctx->sa_state_base = 0;
++ 
++ 	if (IS_ECB(flags))
++ 		goto skip_iv;
++@@ -534,8 +536,10 @@ int eip93_send_req(struct crypto_async_request *async,
++ 	memcpy(iv, reqiv, rctx->ivsize);
++ 
++ 	rctx->sa_state = kzalloc(sizeof(*rctx->sa_state), GFP_KERNEL);
++-	if (!rctx->sa_state)
++-		return -ENOMEM;
+++	if (!rctx->sa_state) {
+++		err = -ENOMEM;
+++		goto free_sa_state;
+++	}
++ 
++ 	sa_state = rctx->sa_state;
++ 
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-hash.c b/drivers/crypto/inside-secure/eip93/eip93-hash.c
++index 84d3ff2d3836..63bb6c4670cb 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-hash.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-hash.c
++@@ -34,7 +34,7 @@ static void eip93_hash_free_data_blocks(struct ahash_request *req)
++ 	if (!list_empty(&rctx->blocks))
++ 		INIT_LIST_HEAD(&rctx->blocks);
++ 
++-	if (rctx->finalize)
+++	if (rctx->finalize && rctx->data_dma)
++ 		dma_unmap_single(eip93->dev, rctx->data_dma,
++ 				 rctx->data_used,
++ 				 DMA_TO_DEVICE);
++@@ -47,12 +47,13 @@ static void eip93_hash_free_sa_record(struct ahash_request *req)
++ 	struct eip93_hash_ctx *ctx = crypto_ahash_ctx(ahash);
++ 	struct eip93_device *eip93 = ctx->eip93;
++ 
++-	if (IS_HMAC(ctx->flags))
+++	if (IS_HMAC(ctx->flags) && rctx->sa_record_hmac_base)
++ 		dma_unmap_single(eip93->dev, rctx->sa_record_hmac_base,
++ 				 sizeof(rctx->sa_record_hmac), DMA_TO_DEVICE);
++ 
++-	dma_unmap_single(eip93->dev, rctx->sa_record_base,
++-			 sizeof(rctx->sa_record), DMA_TO_DEVICE);
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(rctx->sa_record), DMA_TO_DEVICE);
++ }
++ 
++ void eip93_hash_handle_result(struct crypto_async_request *async, int err)
++@@ -66,8 +67,9 @@ void eip93_hash_handle_result(struct crypto_async_request *async, int err)
++ 	struct eip93_device *eip93 = ctx->eip93;
++ 	int i;
++ 
++-	dma_unmap_single(eip93->dev, rctx->sa_state_base,
++-			 sizeof(*sa_state), DMA_FROM_DEVICE);
+++	if (rctx->sa_state_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_state_base,
+++				 sizeof(*sa_state), DMA_FROM_DEVICE);
++ 
++ 	/*
++ 	 * With partial_hash assume SHA256_DIGEST_SIZE buffer is passed.
++@@ -200,6 +202,10 @@ static void __eip93_hash_init(struct ahash_request *req)
++ 
++ 	rctx->len = 0;
++ 	rctx->data_used = 0;
+++	rctx->sa_record_base = 0;
+++	rctx->sa_state_base = 0;
+++	rctx->sa_record_hmac_base = 0;
+++	rctx->data_dma = 0;
++ 	rctx->partial_hash = false;
++ 	rctx->finalize = false;
++ 	INIT_LIST_HEAD(&rctx->blocks);
++@@ -250,8 +256,12 @@ static int eip93_send_hash_req(struct crypto_async_request *async, u8 *data,
++ 									   sizeof(*sa_record_hmac),
++ 									   DMA_TO_DEVICE);
++ 				ret = dma_mapping_error(eip93->dev, rctx->sa_record_hmac_base);
++-				if (ret)
+++				if (ret) {
+++					rctx->sa_record_hmac_base = 0;
+++					dma_unmap_single(eip93->dev, src_addr, len,
+++							 DMA_TO_DEVICE);
++ 					return ret;
+++				}
++ 
++ 				cdesc.sa_addr = rctx->sa_record_hmac_base;
++ 			}
++@@ -420,12 +430,14 @@ static int eip93_hash_update(struct ahash_request *req)
++ 	return ret;
++ 
++ free_sa_record:
++-	dma_unmap_single(eip93->dev, rctx->sa_record_base,
++-			 sizeof(*sa_record), DMA_TO_DEVICE);
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(*sa_record), DMA_TO_DEVICE);
++ 
++ free_sa_state:
++-	dma_unmap_single(eip93->dev, rctx->sa_state_base,
++-			 sizeof(*sa_state), DMA_TO_DEVICE);
+++	if (rctx->sa_state_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_state_base,
+++				 sizeof(*sa_state), DMA_TO_DEVICE);
++ 
++ 	return ret;
++ }
++@@ -501,12 +513,14 @@ static int __eip93_hash_final(struct ahash_request *req, bool map_dma)
++ free_blocks:
++ 	eip93_hash_free_data_blocks(req);
++ 
++-	dma_unmap_single(eip93->dev, rctx->sa_record_base,
++-			 sizeof(*sa_record), DMA_TO_DEVICE);
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(*sa_record), DMA_TO_DEVICE);
++ 
++ free_sa_state:
++-	dma_unmap_single(eip93->dev, rctx->sa_state_base,
++-			 sizeof(*sa_state), DMA_TO_DEVICE);
+++	if (rctx->sa_state_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_state_base,
+++				 sizeof(*sa_state), DMA_TO_DEVICE);
++ 
++ 	return ret;
++ }
++@@ -549,11 +563,13 @@ static int eip93_hash_finup(struct ahash_request *req)
++ 	return __eip93_hash_final(req, false);
++ 
++ free_sa_record:
++-	dma_unmap_single(eip93->dev, rctx->sa_record_base,
++-			 sizeof(*sa_record), DMA_TO_DEVICE);
+++	if (rctx->sa_record_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_record_base,
+++				 sizeof(*sa_record), DMA_TO_DEVICE);
++ free_sa_state:
++-	dma_unmap_single(eip93->dev, rctx->sa_state_base,
++-			 sizeof(*sa_state), DMA_TO_DEVICE);
+++	if (rctx->sa_state_base)
+++		dma_unmap_single(eip93->dev, rctx->sa_state_base,
+++				 sizeof(*sa_state), DMA_TO_DEVICE);
++ 
++ 	return ret;
++ }
+diff --git a/target/linux/airoha/patches-6.18/9999-41-crypto-eip93-reject-hmac-before-setkey.patch b/target/linux/airoha/patches-6.18/9999-41-crypto-eip93-reject-hmac-before-setkey.patch
+new file mode 100644
+index 0000000..8b6cd90
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-41-crypto-eip93-reject-hmac-before-setkey.patch
+@@ -0,0 +1,18 @@
++# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9916-crypto-eip93-reject-HMAC-requests-before-setkey（2026-09-12 P3-E patch-id 对账残余吸收）
++# Upstream: n/a（Christian Marangi / openwrt eip93 系列；未进 backports）
++# Reason: eip93_hash_init() 在未调用 setkey（HMAC ipad 全 0）时仍继续初始化并提交硬件 → 用全零密钥做 HMAC 得到错误摘要。加 IS_HMAC(flags) && !memchr_inv(ctx->ipad, 0, SHA256_BLOCK_SIZE) → -EINVAL。
++# 实证：linux 6.18.44 真源 + 本仓 EIP93 层（vendor/02 驱动 + 9054 动态回退）之上应用成功。
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-hash.c b/drivers/crypto/inside-secure/eip93/eip93-hash.c
++index 63bb6c4670cb..060e90c5eaa7 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-hash.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-hash.c
++@@ -300,6 +300,9 @@ static int eip93_hash_init(struct ahash_request *req)
++ 	struct eip93_hash_ctx *ctx = crypto_ahash_ctx(ahash);
++ 	struct sa_state *sa_state = &rctx->sa_state;
++ 
+++	if (IS_HMAC(ctx->flags) && !memchr_inv(ctx->ipad, 0, SHA256_BLOCK_SIZE))
+++		return -EINVAL;
+++
++ 	memset(sa_state->state_byte_cnt, 0, sizeof(u32) * 2);
++ 	eip93_hash_init_sa_state_digest(ctx->flags & EIP93_HASH_MASK,
++ 					sa_state->state_i_digest);
+diff --git a/target/linux/airoha/patches-6.18/9999-42-crypto-eip93-pe-ready-ordering.patch b/target/linux/airoha/patches-6.18/9999-42-crypto-eip93-pe-ready-ordering.patch
+new file mode 100644
+index 0000000..b3cb185
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-42-crypto-eip93-pe-ready-ordering.patch
+@@ -0,0 +1,28 @@
++# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/generic/backport-6.18/9918-crypto-eip93-order-result-descriptor-reads-after-PE_READY（2026-09-12 P3-E patch-id 对账残余吸收）
++# Upstream: n/a（Christian Marangi / openwrt eip93 系列；未进 backports）
++# Reason: eip93_handle_result_descriptor() 在 device 归还 descriptor 所有权后直接读 rdesc->pe_ctrl_stat_word 并重读寄存器；加 dma_rmb() 并把错误判定改用已读入的 pe_ctrl_stat，保证读序（ARM 弱序下可能读到 PE 尚未写完的字段）。
++# 实证：linux 6.18.44 真源 + 本仓 EIP93 层（vendor/02 驱动 + 9054 动态回退）之上应用成功。
++diff --git a/drivers/crypto/inside-secure/eip93/eip93-main.c b/drivers/crypto/inside-secure/eip93/eip93-main.c
++index 276839e1a515..e3bd28cc0c67 100644
++--- a/drivers/crypto/inside-secure/eip93/eip93-main.c
+++++ b/drivers/crypto/inside-secure/eip93/eip93-main.c
++@@ -224,11 +224,14 @@ static void eip93_handle_result_descriptor(struct eip93_device *eip93)
++ 			 FIELD_GET(EIP93_PE_LENGTH_HOST_PE_READY, pe_length) !=
++ 			 EIP93_PE_LENGTH_PE_READY);
++ 
++-		err = rdesc->pe_ctrl_stat_word & (EIP93_PE_CTRL_PE_EXT_ERR_CODE |
++-						  EIP93_PE_CTRL_PE_EXT_ERR |
++-						  EIP93_PE_CTRL_PE_SEQNUM_ERR |
++-						  EIP93_PE_CTRL_PE_PAD_ERR |
++-						  EIP93_PE_CTRL_PE_AUTH_ERR);
+++		/* Order descriptor reads after device ownership is returned. */
+++		dma_rmb();
+++
+++		err = pe_ctrl_stat & (EIP93_PE_CTRL_PE_EXT_ERR_CODE |
+++				      EIP93_PE_CTRL_PE_EXT_ERR |
+++				      EIP93_PE_CTRL_PE_SEQNUM_ERR |
+++				      EIP93_PE_CTRL_PE_PAD_ERR |
+++				      EIP93_PE_CTRL_PE_AUTH_ERR);
++ 
++ 		desc_flags = FIELD_GET(EIP93_PE_USER_ID_DESC_FLAGS, rdesc->user_id);
++ 		crypto_idr = FIELD_GET(EIP93_PE_USER_ID_CRYPTO_IDR, rdesc->user_id);

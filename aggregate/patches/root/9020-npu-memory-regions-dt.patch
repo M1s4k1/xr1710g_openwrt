@@ -1,0 +1,182 @@
+diff --git a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+index 32bb219..6fde403 100755
+--- a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
++++ b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+@@ -4,6 +4,56 @@
+ 
+ . /lib/functions.sh
+ 
++# Convert a byte count to the same human-readable strings used by the
++# previous dmesg parser ("10240 KiB", "2048 KiB", ...) so the UI contract
++# (status.js calcTotalMem) remains unchanged.
++fmt_mem_size() {
++local bytes=$1
++if [ "$bytes" -ge 1048576 ] && [ $((bytes % 1048576)) -eq 0 ]; then
++echo "$((bytes / 1048576)) MiB"
++else
++echo "$((bytes / 1024)) KiB"
++fi
++}
++
++# Read NPU reserved-memory regions from the stable device-tree view.
++# /proc/device-tree/reserved-memory/npu-* reg is big-endian cells; this SoC
++# uses #address-cells=<2>/#size-cells=<2>, so each reg is 4 32-bit cells:
++# [addr_hi addr_lo size_hi size_lo]. We parse the raw bytes with hexdump and
++# reconstruct values manually (BusyBox hexdump formats byte-wise).
++read_npu_memory_regions() {
++local dt_dir="/proc/device-tree/reserved-memory"
++[ -d "$dt_dir" ] || { echo "[]"; return; }
++
++local first=1 node name
++local b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15
++local ahi alo shi slo start size end
++
++echo "["
++for node in "$dt_dir"/npu-*; do
++[ -e "$node/reg" ] || continue
++name=$(basename "$node")
++name="${name%%@*}"
++set -- $(hexdump -v -e '1/1 "%02x "' "$node/reg" 2>/dev/null)
++[ "$#" -ge 16 ] || continue
++b0=$1; b1=$2; b2=$3; b3=$4
++b4=$5; b5=$6; b6=$7; b7=$8
++b8=$9; b9=${10}; b10=${11}; b11=${12}
++b12=${13}; b13=${14}; b14=${15}; b15=${16}
++ahi=$((0x${b0}${b1}${b2}${b3}))
++alo=$((0x${b4}${b5}${b6}${b7}))
++shi=$((0x${b8}${b9}${b10}${b11}))
++slo=$((0x${b12}${b13}${b14}${b15}))
++start=$((ahi * 4294967296 + alo))
++size=$((shi * 4294967296 + slo))
++end=$((start + size))
++[ "$first" -eq 0 ] && printf ","
++printf '{"name":"%s","start":"0x%x","end":"0x%x","size":"%s"}' "$name" "$start" "$end" "$(fmt_mem_size "$size")"
++first=0
++done
++echo "]"
++}
++
+ get_status() {
+ 	# === NPU Status ===
+ 	local npu_fw="/lib/firmware/airoha/en7581_MT7996_npu_rv32.bin"
+@@ -35,27 +85,8 @@ get_status() {
+ 	local offload_bound=$(cat /sys/kernel/debug/ppe/bind 2>/dev/null | grep -c "^[0-9a-fA-F]")
+ 	local offload_total=$(cat /sys/kernel/debug/ppe/entries 2>/dev/null | grep -c "^[0-9a-fA-F]")
+ 
+-	local mem_info=$(dmesg | grep "reserved mem.*npu" | head -4)
+-	local regions="[]"
+-
+-	if [ -n "$mem_info" ]; then
+-		regions=$(echo "$mem_info" | awk '
+-		BEGIN { printf "[" }
+-		{
+-			if (NR > 1) printf ","
+-			match($0, /0x[0-9a-fA-F]+\.\.0x[0-9a-fA-F]+/)
+-			range = substr($0, RSTART, RLENGTH)
+-			split(range, a, "\\.\\.")
+-			match($0, /\([0-9]+ [KMG]i?B\)/)
+-			size = substr($0, RSTART+1, RLENGTH-2)
+-			match($0, /non-reusable [^ ]+/)
+-			name = substr($0, RSTART+13)
+-			gsub(/@.*/, "", name)
+-			printf "{\"name\":\"%s\",\"start\":\"%s\",\"end\":\"%s\",\"size\":\"%s\"}", name, a[1], a[2], size
+-		}
+-		END { printf "]" }
+-		')
+-	fi
++	local regions
++	regions=$(read_npu_memory_regions)
+ 
+ 	# === CPU Frequency Status ===
+ 	local cpufreq_path="/sys/devices/system/cpu/cpufreq/policy0"
+diff --git a/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu b/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
+index f1d80fc..6e24a88 100755
+--- a/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
++++ b/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
+@@ -4,6 +4,56 @@
+ 
+ . /lib/functions.sh
+ 
++# Convert a byte count to the same human-readable strings used by the
++# previous dmesg parser ("10240 KiB", "2048 KiB", ...) so the UI contract
++# (status.js calcTotalMem) remains unchanged.
++fmt_mem_size() {
++local bytes=$1
++if [ "$bytes" -ge 1048576 ] && [ $((bytes % 1048576)) -eq 0 ]; then
++echo "$((bytes / 1048576)) MiB"
++else
++echo "$((bytes / 1024)) KiB"
++fi
++}
++
++# Read NPU reserved-memory regions from the stable device-tree view.
++# /proc/device-tree/reserved-memory/npu-* reg is big-endian cells; this SoC
++# uses #address-cells=<2>/#size-cells=<2>, so each reg is 4 32-bit cells:
++# [addr_hi addr_lo size_hi size_lo]. We parse the raw bytes with hexdump and
++# reconstruct values manually (BusyBox hexdump formats byte-wise).
++read_npu_memory_regions() {
++local dt_dir="/proc/device-tree/reserved-memory"
++[ -d "$dt_dir" ] || { echo "[]"; return; }
++
++local first=1 node name
++local b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15
++local ahi alo shi slo start size end
++
++echo "["
++for node in "$dt_dir"/npu-*; do
++[ -e "$node/reg" ] || continue
++name=$(basename "$node")
++name="${name%%@*}"
++set -- $(hexdump -v -e '1/1 "%02x "' "$node/reg" 2>/dev/null)
++[ "$#" -ge 16 ] || continue
++b0=$1; b1=$2; b2=$3; b3=$4
++b4=$5; b5=$6; b6=$7; b7=$8
++b8=$9; b9=${10}; b10=${11}; b11=${12}
++b12=${13}; b13=${14}; b14=${15}; b15=${16}
++ahi=$((0x${b0}${b1}${b2}${b3}))
++alo=$((0x${b4}${b5}${b6}${b7}))
++shi=$((0x${b8}${b9}${b10}${b11}))
++slo=$((0x${b12}${b13}${b14}${b15}))
++start=$((ahi * 4294967296 + alo))
++size=$((shi * 4294967296 + slo))
++end=$((start + size))
++[ "$first" -eq 0 ] && printf ","
++printf '{"name":"%s","start":"0x%x","end":"0x%x","size":"%s"}' "$name" "$start" "$end" "$(fmt_mem_size "$size")"
++first=0
++done
++echo "]"
++}
++
+ get_status() {
+ 	# === NPU Status ===
+ 	# Read the actually-loaded NPU firmware path from DTS (firmware-name property).
+@@ -42,27 +92,8 @@ get_status() {
+ 	local offload_bound=$(cat /sys/kernel/debug/ppe/bind 2>/dev/null | grep -c "^[0-9a-fA-F]")
+ 	local offload_total=$(cat /sys/kernel/debug/ppe/entries 2>/dev/null | grep -c "^[0-9a-fA-F]")
+ 
+-	local mem_info=$(dmesg | grep "reserved mem.*npu" | head -4)
+-	local regions="[]"
+-
+-	if [ -n "$mem_info" ]; then
+-		regions=$(echo "$mem_info" | awk '
+-		BEGIN { printf "[" }
+-		{
+-			if (NR > 1) printf ","
+-			match($0, /0x[0-9a-fA-F]+\.\.0x[0-9a-fA-F]+/)
+-			range = substr($0, RSTART, RLENGTH)
+-			split(range, a, "\\.\\.")
+-			match($0, /\([0-9]+ [KMG]i?B\)/)
+-			size = substr($0, RSTART+1, RLENGTH-2)
+-			match($0, /non-reusable [^ ]+/)
+-			name = substr($0, RSTART+13)
+-			gsub(/@.*/, "", name)
+-			printf "{\"name\":\"%s\",\"start\":\"%s\",\"end\":\"%s\",\"size\":\"%s\"}", name, a[1], a[2], size
+-		}
+-		END { printf "]" }
+-		')
+-	fi
++	local regions
++	regions=$(read_npu_memory_regions)
+ 
+ 	# === CPU Frequency Status ===
+ 	local cpufreq_path="/sys/devices/system/cpu/cpufreq/policy0"

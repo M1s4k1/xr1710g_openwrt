@@ -1,0 +1,59 @@
+diff --git a/arch/arm64/boot/dts/airoha/en7581.dtsi b/arch/arm64/boot/dts/airoha/en7581.dtsi
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/boot/dts/airoha/en7581.dtsi
+@@ -0,0 +1,54 @@
++# Source: XR1710G self-held kernel patch -- 说明见 9999-hwrng-airoha-scu-clock-order.patch 头部
++# Upstream: n/a（TRNG 绑定当前为 additionalProperties: false 且无 airoha,scu；上游若接受再改跟上游）
++# Reason: TRNG 走 SCU 总线/外设时钟门（SCU_BUS_CLK_GAT bit3 / SCU_PER_CLK_GAT_1 bit21 /
++#   SCU_PER_CLK_GAT_2 bit0），而 TRNG 节点没有可用的 SCU syscon 句柄 → 驱动无法自行开门。
++#   本补丁：SCU 节点下加"只覆盖时钟门寄存器段"的 syscon 子节点 + TRNG 节点加 airoha,scu
++#   句柄 + 绑定补该属性；无该属性的板子行为不变。
++# 实证：对本仓 kernel 6.18.44 真源 en7581.dtsi / 绑定 YAML 逐字命中（assert 断言 + patch 实应用）。
++# 档位 #EXP：与 9999-hwrng-airoha-scu-clock-order.patch 成对，必须同档；实机判据见 FIXES F120。
++diff --git a/Documentation/devicetree/bindings/rng/airoha,en7581-trng.yaml b/Documentation/devicetree/bindings/rng/airoha,en7581-trng.yaml
++index dfc6d24..a294ce1 100644
++--- a/Documentation/devicetree/bindings/rng/airoha,en7581-trng.yaml
+++++ b/Documentation/devicetree/bindings/rng/airoha,en7581-trng.yaml
++@@ -19,6 +19,12 @@ properties:
++   interrupts:
++     maxItems: 1
++ 
+++  airoha,scu:
+++    $ref: /schemas/types.yaml#/definitions/phandle
+++    description:
+++      Phandle to the SCU clock gate syscon.  When present the driver opens
+++      the TRNG bus/peripheral clock gates before touching the block.
+++
++ required:
++   - compatible
++   - reg
++diff --git a/arch/arm64/boot/dts/airoha/en7581.dtsi b/arch/arm64/boot/dts/airoha/en7581.dtsi
++index ff6908a..8fe1957 100644
++--- a/arch/arm64/boot/dts/airoha/en7581.dtsi
+++++ b/arch/arm64/boot/dts/airoha/en7581.dtsi
++@@ -178,6 +178,15 @@ scuclk: clock-controller@1fb00000 {
++ 			reg = <0x0 0x1fb00000 0x0 0x970>;
++ 			#clock-cells = <1>;
++ 			#reset-cells = <1>;
+++
+++			/* Bus/peripheral clock gates (0x1e4/0x1ec/0x200) for
+++			 * drivers that must ungate their own block before the
+++			 * first register access (e.g. the TRNG).
+++			 */
+++			scu_clk_gat: syscon@1e4 {
+++				compatible = "airoha,en7581-scu-clk-gat", "syscon";
+++				reg = <0x1e4 0x20>;
+++			};
++ 		};
++ 
++ 		pbus_csr: syscon@1fbe3400 {
++@@ -298,6 +307,8 @@ rng@1faa1000 {
++ 			compatible = "airoha,en7581-trng";
++ 			reg = <0x0 0x1faa1000 0x0 0xc04>;
++ 			interrupts = <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>;
+++			/* Open the SCU clock gates before the first TRNG access. */
+++			airoha,scu = <&scu_clk_gat>;
++ 		};
++ 
++ 		system-controller@1fbf0200 {

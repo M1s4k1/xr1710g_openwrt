@@ -1,0 +1,66 @@
+# Source: 07-antenna-improvement.md 附A.1/附A.2（2026-08-18 真机实验结论）
+# Upstream: carried-only
+# Reason: XR1710G eeprom 校准保守——2G 0x2c(28dBm)低于驱动默认 0x30(30dBm)，
+#         5G UNII-3 0x27(28dBm)低于 FCC 非BF授权 30dBm；NAND 直改会被 U-Boot
+#         还原，驱动层精确覆盖这两个字节实现功率解锁。
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: XR1710G firmware maintainer <maintainer@localhost>
+Date: Thu, 20 Aug 2026 10:00:00 +0800
+Subject: [PATCH] wifi: mt76: mt7996: unlock XR1710G conservative eeprom power
+ limits
+
+XR1710G factory eeprom calibration pins 2G target power at 0x2c (28 dBm)
+while the mt76 driver default is 0x30 (30 dBm), and 5G group 4 (UNII-3)
+at 0x27 (28 dBm) while the FCC non-BF tune-up allows 30 dBm. NAND-level
+edits are restored by U-Boot on this device, so override only these exact
+factory bytes in the driver after eeprom load. All other calibration data
+is left untouched.
+
+---
+ mt7996/eeprom.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/mt7996/eeprom.c b/mt7996/eeprom.c
+index ac05f7d..a3437e2 100644
+--- a/mt7996/eeprom.c
++++ b/mt7996/eeprom.c
+@@ -330,6 +330,29 @@ int mt7996_eeprom_parse_hw_cap(struct mt7996_dev *dev, struct mt7996_phy *phy)
+ 	return mt7996_eeprom_parse_band_config(phy);
+ }
+ 
++static void mt7996_eeprom_apply_xr1710g_power_unlock(struct mt7996_dev *dev)
++{
++	u8 *eeprom = dev->mt76.eeprom.data;
++
++	/* XR1710G factory calibration is conservative: 2G 0x2c (28 dBm) is
++	 * 2 dB below the mt76 driver default 0x30 (30 dBm), and 5G group 4
++	 * (UNII-3) 0x27 (28 dBm) is 2 dB below the FCC non-BF tune-up
++	 * (30 dBm). Only override these exact factory values and leave every
++	 * other calibration byte untouched.
++	 */
++	if (eeprom[MT_EE_TX0_POWER_2G] == 0x2c) {
++		eeprom[MT_EE_TX0_POWER_2G] = 0x30;
++		dev_info(dev->mt76.dev,
++			 "XR1710G eeprom: 2G power unlock 28 -> 30 dBm");
++	}
++
++	if (eeprom[MT_EE_TX0_POWER_5G + 4] == 0x27) {
++		eeprom[MT_EE_TX0_POWER_5G + 4] = 0x2a;
++		dev_info(dev->mt76.dev,
++			 "XR1710G eeprom: 5G UNII-3 power unlock 28 -> 30 dBm");
++	}
++}
++
+ int mt7996_eeprom_init(struct mt7996_dev *dev)
+ {
+ 	int ret;
+@@ -338,6 +361,8 @@ int mt7996_eeprom_init(struct mt7996_dev *dev)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	mt7996_eeprom_apply_xr1710g_power_unlock(dev);
++
+ 	ret = mt7996_eeprom_parse_hw_cap(dev, &dev->phy);
+ 	if (ret < 0)
+ 		return ret;

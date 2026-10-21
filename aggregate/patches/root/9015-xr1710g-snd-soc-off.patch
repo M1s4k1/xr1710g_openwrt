@@ -1,0 +1,37 @@
+From 36da8e02b2e12f56ff3582770da2a34499d42613 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Sat, 10 Jan 2026 09:58:15 -1000
+Subject: xr1710g: explicitly disable on-SoC audio (CONFIG_SND_SOC_AN7581=n)
+
+Remove sound subsystem and explicitly keep CONFIG_SND_SOC_AN7581=n (no audio on XR1710G).
+
+（2026-08-17 F13 切片：源 = vendor/fanboy/08-reliability-compat-36da8e02.patch 的 snd 段；
+ 重建/应用顺序实证见 FIXES F13。上游：n/a（自用可靠性/体验项，不打算上游））
+---
+diff --git a/target/linux/airoha/an7581/config-6.18 b/target/linux/airoha/an7581/config-6.18
+index a00dcd1..fc621b7 100644
+--- a/target/linux/airoha/an7581/config-6.18
++++ b/target/linux/airoha/an7581/config-6.18
+@@ -345,21 +345,10 @@ CONFIG_SERIAL_8250_SHARE_IRQ=y
+ CONFIG_SERIAL_MCTRL_GPIO=y
+ CONFIG_SERIAL_OF_PLATFORM=y
+ CONFIG_SMP=y
+-CONFIG_SND=y
+-# CONFIG_SND_COMPRESS_OFFLOAD is not set
+-CONFIG_SND_JACK=y
+-CONFIG_SND_PCM=y
+-CONFIG_SND_SOC=y
+-CONFIG_SND_SOC_AN7581=y
+-# CONFIG_SND_SOC_AN7581_WM8960 is not set
+-CONFIG_SND_SOC_I2C_AND_SPI=y
+-CONFIG_SND_SOC_MEDIATEK=y
+-CONFIG_SND_SOC_SDCA_OPTIONAL=y
++CONFIG_SND_SOC_AN7581=n
+ CONFIG_SOCK_RX_QUEUE_MAPPING=y
+ CONFIG_SOC_BUS=y
+ CONFIG_SOFTIRQ_ON_OWN_STACK=y
+-CONFIG_SOUND=y
+-CONFIG_SOUND_OSS_CORE=y
+ CONFIG_SPARSEMEM=y
+ CONFIG_SPARSEMEM_EXTREME=y
+ CONFIG_SPARSEMEM_VMEMMAP=y

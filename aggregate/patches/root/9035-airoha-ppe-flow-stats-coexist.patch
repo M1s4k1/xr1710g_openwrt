@@ -1,0 +1,96 @@
+diff --git a/target/linux/airoha/patches-6.18/9995-net-airoha-ppe-flow-stats-coexist.patch b/target/linux/airoha/patches-6.18/9995-net-airoha-ppe-flow-stats-coexist.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9995-net-airoha-ppe-flow-stats-coexist.patch
+@@ -0,0 +1,83 @@
++# Source: XR1710G self-held kernel patch
++# Upstream: n/a (to be proposed once validated)
++# Reason: make CONFIG_NET_AIROHA_FLOW_STATS=y coexist with AN7581+MT7996 NPU offload
++#   when the NPU firmware does not implement PPE_FUNC_SET_WAIT_FLOW_STATS_SETUP.
++--- a/drivers/net/ethernet/airoha/airoha_eth.h
+++++ b/drivers/net/ethernet/airoha/airoha_eth.h
++@@ -601,6 +601,7 @@
++ 
++ 	struct airoha_foe_stats *foe_stats;
++ 	dma_addr_t foe_stats_dma;
+++	bool stats_enabled;
++ 
++ 	struct dentry *debugfs_dir;
++ };
++--- a/drivers/net/ethernet/airoha/airoha_ppe.c
+++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
++@@ -147,9 +147,11 @@
++ 	sram_tb_size = sram_num_entries * sizeof(struct airoha_foe_entry);
++ 	dram_num_entries = PPE_RAM_NUM_ENTRIES_SHIFT(PPE_DRAM_NUM_ENTRIES);
++ 
++-	sram_num_stats_entries = airoha_ppe_get_num_stats_entries(ppe);
++-	if (sram_num_stats_entries > 0)
++-		sram_ppe_num_data_entries -= sram_num_stats_entries;
+++	if (ppe->stats_enabled) {
+++		sram_num_stats_entries = airoha_ppe_get_num_stats_entries(ppe);
+++		if (sram_num_stats_entries > 0)
+++			sram_ppe_num_data_entries -= sram_num_stats_entries;
+++	}
++ 	sram_ppe_num_data_entries =
++ 		PPE_RAM_NUM_ENTRIES_SHIFT(sram_ppe_num_data_entries);
++ 
++@@ -624,6 +626,9 @@
++ {
++ 	int i, ppe_num_stats_entries;
++ 
+++	if (!ppe->stats_enabled || !npu->stats)
+++		return;
+++
++ 	ppe_num_stats_entries = airoha_ppe_get_total_num_stats_entries(ppe);
++ 	if (ppe_num_stats_entries < 0)
++ 		return;
++@@ -642,6 +647,9 @@
++ 	int ppe_num_stats_entries;
++ 	u8 nbq;
++ 
+++	if (!ppe->stats_enabled)
+++		return;
+++
++ 	ppe_num_stats_entries = airoha_ppe_get_total_num_stats_entries(ppe);
++ 	if (ppe_num_stats_entries < 0)
++ 		return;
++@@ -1320,6 +1328,9 @@
++ 	struct airoha_npu *npu;
++ 	u32 index;
++ 
+++	if (!ppe->stats_enabled)
+++		return;
+++
++ 	ppe_num_stats_entries = airoha_ppe_get_total_num_stats_entries(ppe);
++ 	if (ppe_num_stats_entries < 0)
++ 		return;
++@@ -1465,8 +1476,19 @@
++ 	if (ppe_num_stats_entries > 0) {
++ 		err = npu->ops.ppe_init_stats(npu, ppe->foe_stats_dma,
++ 					      ppe_num_stats_entries);
++-		if (err)
++-			goto error_npu_put;
+++		if (!err) {
+++			ppe->stats_enabled = true;
+++		} else {
+++			/* The AN7581+MT7996 NPU firmware does not implement
+++			 * FLOW_STATS_SETUP yet.  Do not fail NPU offload setup
+++			 * because of that: continue with stats disabled and let
+++			 * the SRAM table keep its full data-entry capacity.
+++			 */
+++			dev_warn(eth->dev,
+++				 "NPU flow stats unavailable (%d), continue without per-flow hw stats\n",
+++				 err);
+++			ppe->stats_enabled = false;
+++		}
++ 	}
++ 
++ 	airoha_ppe_hw_init(ppe);
+diff --git a/target/linux/airoha/an7581/config-6.18 b/target/linux/airoha/an7581/config-6.18
+--- a/target/linux/airoha/an7581/config-6.18
++++ b/target/linux/airoha/an7581/config-6.18
+@@ -233,3 +233,3 @@
+ CONFIG_NET_AIROHA=y
+-# CONFIG_NET_AIROHA_FLOW_STATS is not set
++CONFIG_NET_AIROHA_FLOW_STATS=y
+ CONFIG_NET_AIROHA_NPU=y

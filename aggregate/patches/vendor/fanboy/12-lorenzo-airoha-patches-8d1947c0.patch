@@ -1,0 +1,209 @@
+From 8d1947c01241bfba67a9da09dec5e86f9c86088c Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 24 Oct 2025 14:44:03 +0200
+Subject: [PATCH] airoha patches from Lorenzo
+
+from https://github.com/LorenzoBianconi/openwrt/tree/mt76-eagle-npu
+
+airoha: update tx-debug.sh
+
+airoha: add missing patch for npu eagle ser support
+
+airoha: enable second lane
+---
+ .../linux/airoha/base-files/etc/tx-debug.sh   | 136 ++++++++++++++++++
+ .../117-03-airoha_npu_eagle_add_ser.patch     |  15 ++
+ .../airoha/patches-6.18/910-02-usb-pcie.patch |  19 +++
+ 3 files changed, 170 insertions(+)
+ create mode 100755 target/linux/airoha/base-files/etc/tx-debug.sh
+ create mode 100644 target/linux/airoha/patches-6.18/117-03-airoha_npu_eagle_add_ser.patch
+ create mode 100644 target/linux/airoha/patches-6.18/910-02-usb-pcie.patch
+
+diff --git a/target/linux/airoha/base-files/etc/tx-debug.sh b/target/linux/airoha/base-files/etc/tx-debug.sh
+new file mode 100755
+index 00000000000000..09ea6352f3779e
+--- /dev/null
++++ b/target/linux/airoha/base-files/etc/tx-debug.sh
+@@ -0,0 +1,136 @@
++#!/bin/sh
++
++ 
++
++devmem 0x1fb50018 32 0x3
++
++[ $# -ge 1 ] && sleep $1
++
++ 
++
++CDM1_TX_OK=$(devmem 0x1fb50580)
++CDM1_RXCPU_OK_CNT=$(devmem 0x1fb50590)
++CDM1_RXHWF_OK_CNT=$(devmem 0x1fb50594)
++CDM1_RXHWF_FAST_OK_CNT=$(devmem 0x1fb50598)
++CDM1_RXCPU_DROP_CNT=$(devmem 0x1fb505a0)
++CDM1_RXHWF_DROP_CNT=$(devmem 0x1fb505a4)
++CDM1_RXHWF_FAST_DROP_CNT=$(devmem 0x1fb505a8)
++
++GDM1_TX_OK_CNT_L=$(devmem 0x1fb50604)
++GDM1_TX_DROP_CNT=$(devmem 0x1fb50608)
++GDM1_TX_GET_CNT=$(devmem 0x1fb50600)
++GDM1_TX_OK_CNT_H=$(devmem 0x1fb50780)
++GDM1_RX_OK_CNT=$(devmem 0x1fb50648)
++GDM1_RX_FC_DROP_CNT=$(devmem 0x1fb5064c)
++GDM1_RX_RC_DROP_CNT=$(devmem 0x1fb50650)
++GDM1_RX_OVER_DROP_CNT=$(devmem 0x1fb50654)
++GDM1_RX_ERR_DROP_CNT=$(devmem 0x1fb50658)
++
++CDM2_TX_OK=$(devmem 0x1fb51580)
++CDM2_RXCPU_OK_CNT=$(devmem 0x1fb51590)
++CDM2_RXHWF_OK_CNT=$(devmem 0x1fb51594)
++CDM2_RXHWF_FAST_OK_CNT=$(devmem 0x1fb51598)
++CDM2_RXCPU_DROP_CNT=$(devmem 0x1fb515a0)
++CDM2_RXHWF_DROP_CNT=$(devmem 0x1fb515a4)
++CDM2_RXHWF_FAST_DROP_CNT=$(devmem 0x1fb515a8)
++
++GDM2_TX_GET_CNT=$(devmem 0x1fb51600)
++GDM2_TX_OK_CNT_L=$(devmem 0x1fb51604)
++GDM2_TX_OK_CNT_H=$(devmem 0x1fb51780)
++GDM2_TX_DROP_CNT=$(devmem 0x1fb51608)
++GDM2_RX_OK_CNT=$(devmem 0x1fb51648)
++GDM2_RX_FC_DROP_CNT=$(devmem 0x1fb5164c)
++GDM2_RX_RC_DROP_CNT=$(devmem 0x1fb51650)
++GDM2_RX_OVER_DROP_CNT=$(devmem 0x1fb51654)
++GDM2_RX_ERR_DROP_CNT=$(devmem 0x1fb51658)
++
++GDM4_TX_GET_CNT=$(devmem 0x1fb52600)
++GDM4_TX_OK_CNT_L=$(devmem 0x1fb52604)
++GDM4_TX_OK_CNT_H=$(devmem 0x1fb52780)
++GDM4_TX_DROP_CNT=$(devmem 0x1fb52608)
++GDM4_RX_OK_CNT=$(devmem 0x1fb52648)
++GDM4_RX_OK_CNT_H=$(devmem 0x1fb52790)
++GDM4_RX_FC_DROP_CNT=$(devmem 0x1fb5264c)
++GDM4_RX_RC_DROP_CNT=$(devmem 0x1fb52650)
++GDM4_RX_OVER_DROP_CNT=$(devmem 0x1fb52654)
++GDM4_RX_ERR_DROP_CNT=$(devmem 0x1fb52658)
++
++TDPC_P6=$(devmem 0x1fb5c600)
++TCRC_P6=$(devmem 0x1fb5c604)
++TUPC_P6=$(devmem 0x1fb5c608)
++TDPC_P1=$(devmem 0x1fb5c100)
++TCRC_P1=$(devmem 0x1fb5c104)
++TUPC_P1=$(devmem 0x1fb5c108)
++
++PSE_SHARE_USED_THD=$(devmem 0x1fb50094)
++PSE_ACTIVE_DROP_CNT=$(devmem 0x1fb5011c)
++PSE_DROP_CNT_0=$(devmem 0x1fb50120)
++PSE_DROP_CNT_1=$(devmem 0x1fb50124)
++PSE_DROP_CNT_2=$(devmem 0x1fb50128)
++PSE_DROP_CNT_3=$(devmem 0x1fb5012c)
++PSE_DROP_CNT_4=$(devmem 0x1fb50130)
++PSE_DROP_CNT_5=$(devmem 0x1fb50134)
++PSE_DROP_CNT_6=$(devmem 0x1fb50138)
++PSE_DROP_CNT_7=$(devmem 0x1fb50140)
++PSE_DROP_CNT_8=$(devmem 0x1fb50144)
++PSE_DROP_CNT_9=$(devmem 0x1fb50148)
++ 
++echo -e "CDM1_TX_OK:\t\t\t$CDM1_TX_OK"
++echo -e "CDM1_RXCPU_OK_CNT:\t\t$CDM1_RXCPU_OK_CNT"
++echo -e "CDM1_RXHWF_OK_CNT:\t\t$CDM1_RXHWF_OK_CNT"
++echo -e "CDM1_RXHWF_FAST_OK_CNT:\t\t$CDM1_RXHWF_FAST_OK_CNT"
++echo -e "CDM1_RXCPU_DROP_CNT:\t\t$CDM1_RXCPU_DROP_CNT"
++echo -e "CDM1_RXHWF_DROP_CNT:\t\t$CDM1_RXHWF_DROP_CNT"
++echo -e "CDM1_RXHWF_FAST_DROP_CNT:\t$CDM1_RXHWF_FAST_DROP_CNT"
++echo -e "GDM1_TX_GET_CNT:\t\t$GDM1_TX_GET_CNT"
++echo -e "GDM1_TX_OK_CNT_L:\t\t$GDM1_TX_OK_CNT_L"
++echo -e "GDM1_TX_OK_CNT_H:\t\t$GDM1_TX_OK_CNT_H"
++echo -e "GDM1_TX_DROP_CNT:\t\t$GDM1_TX_DROP_CNT"
++echo -e "GDM1_RX_OK_CNT:\t\t\t$GDM1_RX_OK_CNT"
++echo -e "GDM1_RX_FC_DROP_CNT:\t\t$GDM1_RX_FC_DROP_CNT"
++echo -e "GDM1_RX_RC_DROP_CNT:\t\t$GDM1_RX_RC_DROP_CNT"
++echo -e "GDM1_RX_OVER_DROP_CNT:\t\t$GDM1_RX_OVER_DROP_CNT"
++echo -e "GDM1_RX_ERR_DROP_CNT:\t\t$GDM1_RX_ERR_DROP_CNT"
++echo -e "CDM2_TX_OK:\t\t\t$CDM2_TX_OK"
++echo -e "CDM2_RXCPU_OK_CNT:\t\t$CDM2_RXCPU_OK_CNT"
++echo -e "CDM2_RXHWF_OK_CNT:\t\t$CDM2_RXHWF_OK_CNT"
++echo -e "CDM2_RXHWF_FAST_OK_CNT:\t\t$CDM2_RXHWF_FAST_OK_CNT"
++echo -e "CDM2_RXCPU_DROP_CNT:\t\t$CDM2_RXCPU_DROP_CNT"
++echo -e "CDM2_RXHWF_DROP_CNT:\t\t$CDM2_RXHWF_DROP_CNT"
++echo -e "CDM2_RXHWF_FAST_DROP_CNT:\t$CDM2_RXHWF_FAST_DROP_CNT"
++echo -e "GDM2_TX_GET_CNT:\t\t$GDM2_TX_GET_CNT"
++echo -e "GDM2_TX_OK_CNT_L:\t\t$GDM2_TX_OK_CNT_L"
++echo -e "GDM2_TX_OK_CNT_H:\t\t$GDM2_TX_OK_CNT_H"
++echo -e "GDM2_TX_DROP_CNT:\t\t$GDM2_TX_DROP_CNT"
++echo -e "GDM2_RX_OK_CNT:\t\t\t$GDM2_RX_OK_CNT"
++echo -e "GDM2_RX_FC_DROP_CNT:\t\t$GDM2_RX_FC_DROP_CNT"
++echo -e "GDM2_RX_RC_DROP_CNT:\t\t$GDM2_RX_RC_DROP_CNT"
++echo -e "GDM2_RX_OVER_DROP_CNT:\t\t$GDM2_RX_OVER_DROP_CNT"
++echo -e "GDM2_RX_ERR_DROP_CNT:\t\t$GDM2_RX_ERR_DROP_CNT"
++echo -e "GDM4_TX_GET_CNT:\t\t$GDM4_TX_GET_CNT"
++echo -e "GDM4_TX_OK_CNT_L:\t\t$GDM4_TX_OK_CNT_L"
++echo -e "GDM4_TX_OK_CNT_H:\t\t$GDM4_TX_OK_CNT_H"
++echo -e "GDM4_TX_DROP_CNT:\t\t$GDM4_TX_DROP_CNT"
++echo -e "GDM4_RX_OK_CNT:\t\t\t$GDM4_RX_OK_CNT"
++echo -e "GDM4_RX_FC_DROP_CNT:\t\t$GDM4_RX_FC_DROP_CNT"
++echo -e "GDM4_RX_RC_DROP_CNT:\t\t$GDM4_RX_RC_DROP_CNT"
++echo -e "GDM4_RX_OVER_DROP_CNT:\t\t$GDM4_RX_OVER_DROP_CNT"
++echo -e "GDM4_RX_ERR_DROP_CNT:\t\t$GDM4_RX_ERR_DROP_CNT"
++echo -e "TDPC_P6:\t\t\t$TDPC_P6"
++echo -e "TCRC_P6:\t\t\t$TCRC_P6"
++echo -e "TUPC_P6:\t\t\t$TUPC_P6"
++echo -e "TDPC_P1:\t\t\t$TDPC_P1"
++echo -e "TCRC_P1:\t\t\t$TCRC_P1"
++echo -e "TUPC_P1:\t\t\t$TUPC_P1"
++echo -e "PSE_SHARE_USED_THD:\t\t$PSE_SHARE_USED_THD"
++echo -e "PSE_ACTIVE_DROP_CNT:\t\t$PSE_ACTIVE_DROP_CNT"
++echo -e "PSE_DROP_CNT_0:\t\t\t$PSE_DROP_CNT_0"
++echo -e "PSE_DROP_CNT_1:\t\t\t$PSE_DROP_CNT_1"
++echo -e "PSE_DROP_CNT_2:\t\t\t$PSE_DROP_CNT_2"
++echo -e "PSE_DROP_CNT_3:\t\t\t$PSE_DROP_CNT_3"
++echo -e "PSE_DROP_CNT_4:\t\t\t$PSE_DROP_CNT_4"
++echo -e "PSE_DROP_CNT_5\t\t\t$PSE_DROP_CNT_5"
++echo -e "PSE_DROP_CNT_6:\t\t\t$PSE_DROP_CNT_6"
++echo -e "PSE_DROP_CNT_7:\t\t\t$PSE_DROP_CNT_7"
++echo -e "PSE_DROP_CNT_8:\t\t\t$PSE_DROP_CNT_8"
++echo -e "PSE_DROP_CNT_9:\t\t\t$PSE_DROP_CNT_9"
+diff --git a/target/linux/airoha/patches-6.18/117-03-airoha_npu_eagle_add_ser.patch b/target/linux/airoha/patches-6.18/117-03-airoha_npu_eagle_add_ser.patch
+new file mode 100644
+index 00000000000000..7ef0f05c39e664
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/117-03-airoha_npu_eagle_add_ser.patch
+@@ -0,0 +1,15 @@
++---
++ drivers/net/ethernet/airoha/airoha_npu.c |    2 +-
++ 1 file changed, 1 insertion(+), 1 deletion(-)
++
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -183,7 +183,7 @@ static int airoha_npu_send_msg(struct ai
++ 	ret = regmap_read_poll_timeout_atomic(npu->regmap,
++ 					      REG_CR_MBQ0_CTRL(3) + offset,
++ 					      val, (val & MBOX_MSG_DONE),
++-					      100, 100 * MSEC_PER_SEC);
+++					      100, 1000 * MSEC_PER_SEC);
++ 	if (!ret && FIELD_GET(MBOX_MSG_STATUS, val) != NPU_MBOX_SUCCESS)
++ 		ret = -EINVAL;
++ 
+diff --git a/target/linux/airoha/patches-6.18/910-02-usb-pcie.patch b/target/linux/airoha/patches-6.18/910-02-usb-pcie.patch
+new file mode 100644
+index 00000000000000..46e58a33c51185
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/910-02-usb-pcie.patch
+@@ -0,0 +1,19 @@
++--- a/drivers/clk/clk-en7523.c
+++++ b/drivers/clk/clk-en7523.c
++@@ -42,6 +42,7 @@
++ #define REG_NP_SCU_SSTR			0x9c
++ #define REG_PCIE_XSI0_SEL_MASK		GENMASK(14, 13)
++ #define REG_PCIE_XSI1_SEL_MASK		GENMASK(12, 11)
+++#define REG_USB_PCIE_SEL		BIT(3)
++ #define REG_CRYPTO_CLKSRC2		0x20c
++ 
++ #define REG_RST_CTRL2			0x830
++@@ -1143,7 +1144,7 @@ static int en7581_clk_hw_init(struct pla
++ 		return err;
++ 
++ 	regmap_clear_bits(clk_map, REG_NP_SCU_SSTR,
++-			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
+++			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK | REG_USB_PCIE_SEL);
++ 	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
++ 			   FIELD_PREP(REG_PCIE_CTRL, 3));
++ 

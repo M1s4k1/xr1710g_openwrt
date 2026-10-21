@@ -1,17 +1,14 @@
-# upstream-decisions.md — 上游更新裁决账本
+# upstream-decisions.md — aggregate 快照裁决账本
 
-记录 **genshanxinli/xr1710g-openwrt** 每次更新时，逐条「接受 / 拒绝 / 待评估」的裁决与理由。
+本项目使用 `aggregate/` 内置冻结快照。这里保留复制来源的历史裁决记录；构建过程不追踪、不 fetch，也不会自动更新 `genshanxinli/xr1710g-openwrt`。以后如需更新 aggregate，必须人工复制、逐项比较并重新验证。
 
 ## 怎么用
 
 ```bash
-scripts/check-upstream.sh              # ① 看上游更新了什么、有无冲突
-                                        # ② 按下面模板逐条登记裁决
-scripts/check-upstream.sh --baseline   # ③ 裁决完成后，把当前上游 tip 记为已裁决基线
+scripts/check-upstream.sh              # 检查内置快照状态（不会联网）
+                                        # 显式传入外部 Git 目录时才做远程对账
+scripts/check-upstream.sh --baseline   # 记录当前内置快照标识
 ```
-
-`--baseline` 会把上游 tip 存进 `.stage/upstream-baseline`（不进 git）。
-下次 `check-upstream.sh` 只报告**基线之后**的新提交，避免重复裁决。
 
 ## 状态词汇
 

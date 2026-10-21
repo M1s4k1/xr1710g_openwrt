@@ -1,0 +1,144 @@
+diff --git a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+index 6fde403..00ef64f 100755
+--- a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
++++ b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+@@ -721,44 +721,40 @@ get_device_mode() {
+ }
+ 
+ 
+-get_wan_health() {
+-	# Get WAN interface logical status
+-	local wan_status
+-	wan_status=$(ubus call network.interface.wan status 2>/dev/null)
++	get_wan_health() {
++		# Get WAN interface logical status
++		local wan_status
++		wan_status=$(ubus call network.interface.wan status 2>/dev/null)
+ 
+-	if [ -z "$wan_status" ]; then
+-		echo '{"available":false}'
+-		return
+-	fi
+-
+-	local up l3_device uptime
+-	up=$(echo "$wan_status" | jsonfilter -e "@.up" 2>/dev/null)
+-	l3_device=$(echo "$wan_status" | jsonfilter -e "@.l3_device" 2>/dev/null)
+-	uptime=$(echo "$wan_status" | jsonfilter -e "@.uptime" 2>/dev/null)
++		if [ -z "$wan_status" ]; then
++			echo '{"available":false}'
++			return
++		fi
+ 
+-	# Get device-level statistics via ip -s link
+-	local rx_bytes=0 tx_bytes=0 rx_errors=0 tx_errors=0 rx_dropped=0 tx_dropped=0 collisions=0
+-	if [ -n "$l3_device" ]; then
+-		local stats
+-		stats=$(ip -s link show "$l3_device" 2>/dev/null)
+-		if [ -n "$stats" ]; then
+-			# ip -s link output: RX line followed by bytes/packets/errors/dropped/...
+-			# TX line followed by same
+-			rx_bytes=$(echo "$stats" | awk '/^    [0-9]/{if(rx==1){print $1+0; rx=0}} /RX:/{rx=1}')
+-			tx_bytes=$(echo "$stats" | awk '/^    [0-9]/{if(tx==1){print $1+0; tx=0}} /TX:/{tx=1}')
+-			rx_errors=$(echo "$stats" | awk '/RX:/{getline; print $3+0}')
+-			tx_errors=$(echo "$stats" | awk '/TX:/{getline; print $3+0}')
+-			rx_dropped=$(echo "$stats" | awk '/RX:/{getline; print $4+0}')
+-			tx_dropped=$(echo "$stats" | awk '/TX:/{getline; print $4+0}')
++		local up l3_device uptime
++		up=$(echo "$wan_status" | jsonfilter -e "@.up" 2>/dev/null)
++		l3_device=$(echo "$wan_status" | jsonfilter -e "@.l3_device" 2>/dev/null)
++		uptime=$(echo "$wan_status" | jsonfilter -e "@.uptime" 2>/dev/null)
++
++		# BusyBox ip does not support "ip -s"; read the stable sysfs counters
++		# that are always exported by the kernel for every netdev.
++		local rx_bytes=0 tx_bytes=0 rx_errors=0 tx_errors=0 rx_dropped=0 tx_dropped=0
++		if [ -n "$l3_device" ] && [ -d "/sys/class/net/$l3_device/statistics" ]; then
++			local s="/sys/class/net/$l3_device/statistics"
++			rx_bytes=$(cat "$s/rx_bytes" 2>/dev/null || echo 0)
++			tx_bytes=$(cat "$s/tx_bytes" 2>/dev/null || echo 0)
++			rx_errors=$(cat "$s/rx_errors" 2>/dev/null || echo 0)
++			tx_errors=$(cat "$s/tx_errors" 2>/dev/null || echo 0)
++			rx_dropped=$(cat "$s/rx_dropped" 2>/dev/null || echo 0)
++			tx_dropped=$(cat "$s/tx_dropped" 2>/dev/null || echo 0)
+ 		fi
+-	fi
+ 
+-	printf '{"available":true,"up":%s,"device":"%s","uptime":%d,"rx_bytes":%d,"tx_bytes":%d,"rx_errors":%d,"tx_errors":%d,"rx_dropped":%d,"tx_dropped":%d}' \
+-		"${up:-false}" "${l3_device:-}" "${uptime:-0}" \
+-		"${rx_bytes:-0}" "${tx_bytes:-0}" \
+-		"${rx_errors:-0}" "${tx_errors:-0}" \
+-		"${rx_dropped:-0}" "${tx_dropped:-0}"
+-}
++		printf '{"available":true,"up":%s,"device":"%s","uptime":%d,"rx_bytes":%d,"tx_bytes":%d,"rx_errors":%d,"tx_errors":%d,"rx_dropped":%d,"tx_dropped":%d}' \
++			"${up:-false}" "${l3_device:-}" "${uptime:-0}" \
++			"${rx_bytes:-0}" "${tx_bytes:-0}" \
++			"${rx_errors:-0}" "${tx_errors:-0}" \
++			"${rx_dropped:-0}" "${tx_dropped:-0}"
++	}
+ 
+ get_jitter_result() {
+ 	local result_file="/tmp/npu-jitter.json"
+@@ -1048,37 +1044,36 @@ ${d}" ;;
+ 	printf '{"available":true,"mlo":%s,"bands":[%s]}' "$([ "$is_mld" = 1 ] && echo true || echo false)" "$bands_json"
+ }
+ 
+-get_bridge_stats() {
+-	# Check br-lan for tx_dropped (CPU can't feed WiFi chip fast enough)
+-	# and overall packet rates for bridge activity indication
++	get_bridge_stats() {
++		# Check br-lan for tx_dropped (CPU can't feed WiFi chip fast enough)
++		# and overall packet rates for bridge activity indication.
++		# BusyBox ip does not support "ip -s"; read sysfs directly.
+ 
+-	local stats
+-	stats=$(ip -s link show br-lan 2>/dev/null)
+-
+-	if [ -z "$stats" ]; then
+-		echo '{"available":false}'
+-		return
+-	fi
++		local s="/sys/class/net/br-lan/statistics"
++		if [ ! -d "$s" ]; then
++			echo '{"available":false}'
++			return
++		fi
+ 
+-	local rx_bytes rx_packets rx_dropped tx_bytes tx_packets tx_dropped
+-	rx_bytes=$(echo "$stats"   | awk '/RX:/{getline; print $1+0}')
+-	rx_packets=$(echo "$stats" | awk '/RX:/{getline; print $2+0}')
+-	rx_dropped=$(echo "$stats" | awk '/RX:/{getline; print $4+0}')
+-	tx_bytes=$(echo "$stats"   | awk '/TX:/{getline; print $1+0}')
+-	tx_packets=$(echo "$stats" | awk '/TX:/{getline; print $2+0}')
+-	tx_dropped=$(echo "$stats" | awk '/TX:/{getline; print $4+0}')
+-
+-	# Also check for any bridge forwarding errors via brctl if available
+-	local fwd_errors=0
+-	if command -v brctl > /dev/null 2>&1; then
+-		fwd_errors=$(brctl showstp br-lan 2>/dev/null | awk '/forward transitions/{sum+=$NF} END{print sum+0}')
+-	fi
++		local rx_bytes rx_packets rx_dropped tx_bytes tx_packets tx_dropped
++		rx_bytes=$(cat "$s/rx_bytes" 2>/dev/null || echo 0)
++		rx_packets=$(cat "$s/rx_packets" 2>/dev/null || echo 0)
++		rx_dropped=$(cat "$s/rx_dropped" 2>/dev/null || echo 0)
++		tx_bytes=$(cat "$s/tx_bytes" 2>/dev/null || echo 0)
++		tx_packets=$(cat "$s/tx_packets" 2>/dev/null || echo 0)
++		tx_dropped=$(cat "$s/tx_dropped" 2>/dev/null || echo 0)
++
++		# Also check for any bridge forwarding errors via brctl if available
++		local fwd_errors=0
++		if command -v brctl > /dev/null 2>&1; then
++			fwd_errors=$(brctl showstp br-lan 2>/dev/null | awk '/forward transitions/{sum+=$NF} END{print sum+0}')
++		fi
+ 
+-	printf '{"available":true,"rx_bytes":%d,"rx_packets":%d,"rx_dropped":%d,"tx_bytes":%d,"tx_packets":%d,"tx_dropped":%d,"fwd_errors":%d}' \
+-		"${rx_bytes:-0}" "${rx_packets:-0}" "${rx_dropped:-0}" \
+-		"${tx_bytes:-0}" "${tx_packets:-0}" "${tx_dropped:-0}" \
+-		"${fwd_errors:-0}"
+-}
++		printf '{"available":true,"rx_bytes":%d,"rx_packets":%d,"rx_dropped":%d,"tx_bytes":%d,"tx_packets":%d,"tx_dropped":%d,"fwd_errors":%d}' \
++			"${rx_bytes:-0}" "${rx_packets:-0}" "${rx_dropped:-0}" \
++			"${tx_bytes:-0}" "${tx_packets:-0}" "${tx_dropped:-0}" \
++			"${fwd_errors:-0}"
++	}
+ 
+ get_npu_bypass() {
+ 	# Determines if the NPU is actively offloading traffic.

@@ -1,0 +1,62 @@
+diff --git a/target/linux/generic/pending-6.18/680-ledtrig-netdev-link-mode-mutex.patch b/target/linux/generic/pending-6.18/680-ledtrig-netdev-link-mode-mutex.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/generic/pending-6.18/680-ledtrig-netdev-link-mode-mutex.patch
+@@ -0,0 +1,57 @@
++# Source: XR1710G self-held kernel patch
++# Upstream: n/a (proposed)
++# Reason: fix ledtrig-netdev generic link mode store on hw-offloaded PHY LEDs (#14)
++diff --git a/drivers/leds/trigger/ledtrig-netdev.c b/drivers/leds/trigger/ledtrig-netdev.c
++index c15efe3..f3a856a 100644
++--- a/drivers/leds/trigger/ledtrig-netdev.c
+++++ b/drivers/leds/trigger/ledtrig-netdev.c
++@@ -385,19 +385,38 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
++ 		return -EINVAL;
++ 	}
++ 
++-	if (state)
+++	if (state) {
+++		switch (attr) {
+++		case TRIGGER_NETDEV_LINK:
+++			/* Generic "link" mode is mutually exclusive with the
+++			 * link-speed-specific modes.  When hw-control get seeds
+++			 * trigger_data->mode from hardware state, that mode may
+++			 * already contain both (e.g. link + link_1000), which
+++			 * would otherwise make a later store of "1" to the generic
+++			 * link attribute fail with -EINVAL.
+++			 */
+++			clear_bit(TRIGGER_NETDEV_LINK_10, &mode);
+++			clear_bit(TRIGGER_NETDEV_LINK_100, &mode);
+++			clear_bit(TRIGGER_NETDEV_LINK_1000, &mode);
+++			clear_bit(TRIGGER_NETDEV_LINK_2500, &mode);
+++			clear_bit(TRIGGER_NETDEV_LINK_5000, &mode);
+++			clear_bit(TRIGGER_NETDEV_LINK_10000, &mode);
+++			break;
+++		case TRIGGER_NETDEV_LINK_10:
+++		case TRIGGER_NETDEV_LINK_100:
+++		case TRIGGER_NETDEV_LINK_1000:
+++		case TRIGGER_NETDEV_LINK_2500:
+++		case TRIGGER_NETDEV_LINK_5000:
+++		case TRIGGER_NETDEV_LINK_10000:
+++			clear_bit(TRIGGER_NETDEV_LINK, &mode);
+++			break;
+++		default:
+++			break;
+++		}
++ 		set_bit(bit, &mode);
++-	else
+++	} else {
++ 		clear_bit(bit, &mode);
++-
++-	if (test_bit(TRIGGER_NETDEV_LINK, &mode) &&
++-	    (test_bit(TRIGGER_NETDEV_LINK_10, &mode) ||
++-	     test_bit(TRIGGER_NETDEV_LINK_100, &mode) ||
++-	     test_bit(TRIGGER_NETDEV_LINK_1000, &mode) ||
++-	     test_bit(TRIGGER_NETDEV_LINK_2500, &mode) ||
++-	     test_bit(TRIGGER_NETDEV_LINK_5000, &mode) ||
++-	     test_bit(TRIGGER_NETDEV_LINK_10000, &mode)))
++-		return -EINVAL;
+++	}
++ 
++ 	cancel_delayed_work_sync(&trigger_data->work);
++ 

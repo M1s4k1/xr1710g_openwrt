@@ -1,0 +1,27 @@
+# Source: Gilly1970/Gemtek-W1700K-6.18 整树 package/kernel/mt76/Makefile（2026-09-12 吸收；B2 发现）
+# Upstream: n/a（上游 openwrt mt76 包未做该映射）
+# Reason: mt76 源码用 `#ifdef CONFIG_MAC80211_DEBUGFS` 判断 per-STA debugfs（pin be5ce791 共 6 处：
+#   mt7996/debugfs.c:1006、mt7996/main.c:2633、mt7996/mt7996.h:992 及 mt7915 三处），但 mt76 走
+#   backports 构建、autoconf 里只有 `CPTCFG_MAC80211_DEBUGFS`（由 CONFIG_PACKAGE_MAC80211_DEBUGFS
+#   经 mac80211 包 Makefile:255-258 映射而来）——`CONFIG_` 前缀的名字**从未被定义** → 这 6 处
+#   全部被编译掉，per-STA debugfs（hw-queues / fixed_rate 等）静默缺失；也是 Gilly 038
+#   （per-link sta stats debugfs）的前置：不修映射，038 是死代码。
+#   映射按 CONFIG_PACKAGE_MAC80211_DEBUGFS 条件开（与同文件 MESH/TESTMODE 的写法一致），
+#   默认不增大镜像 debugfs 面；需要时在 seed-config 打开该包即可。
+# 判据：开 CONFIG_PACKAGE_MAC80211_DEBUGFS 后，实机 `ls /sys/kernel/debug/ieee80211/*/netdev:*/`
+#   出现 stations 目录，且 `iw station dump` 之外可用 mt76 的 per-STA debugfs 文件。
+diff --git a/package/kernel/mt76/Makefile b/package/kernel/mt76/Makefile
+index 8e4b6b2..9f2c7d1 100644
+--- a/package/kernel/mt76/Makefile
++++ b/package/kernel/mt76/Makefile
+@@ -414,6 +414,10 @@
+   NOSTDINC_FLAGS += -DCONFIG_MAC80211_MESH
+ endif
+ 
++ifdef CONFIG_PACKAGE_MAC80211_DEBUGFS
++  NOSTDINC_FLAGS += -DCONFIG_MAC80211_DEBUGFS
++endif
++
+ ifdef CONFIG_PACKAGE_CFG80211_TESTMODE
+   NOSTDINC_FLAGS += -DCONFIG_NL80211_TESTMODE
+   PKG_MAKE_FLAGS += CONFIG_NL80211_TESTMODE=y

@@ -1,0 +1,36 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration package/kernel/mac80211/patches/subsys/406-wifi-mac80211-do-not-update-channel-if-csa-ie-exists.patch
+# Upstream: n/a（上游风格（未进 backports-7.2））—— 2026-09-12 P3-D 吸收，#EXP
+# Reason: STA 在切换过程中仍可能收到带旧信道的 beacon（含 CSA IE）→ 会切回旧信道并断连；存在 CSA IE 时不要更新信道
+# 实证：裁剪后的 backports-7.2（上游 subsys 20 补丁 + 本仓 411）之上应用（410 已按 7.2 重基为 fuzz=0）。
+From fd78898a15a776dbcee104cabf3111a777da1901 Mon Sep 17 00:00:00 2001
+From: Peter Chiu <chui-hao.chiu@mediatek.com>
+Date: Mon, 30 Jun 2025 13:55:14 +0800
+Subject: [PATCH 103/137] wifi: mac80211: do not update channel if csa ie
+ exists
+
+Station may receive beacon ie with old channel after channel switch.
+Do not update channel when CSA ie exists to prevent station
+switch back to old channel and leads to disconnection.
+
+Signed-off-by: Peter Chiu <chui-hao.chiu@mediatek.com>
+---
+ net/mac80211/mlme.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/net/mac80211/mlme.c b/net/mac80211/mlme.c
+index c1eefae5..b9e8e2f9 100644
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -7918,7 +7918,8 @@ static void ieee80211_rx_mgmt_beacon(struct ieee80211_link_data *link,
+ 
+ 	changed |= ieee80211_recalc_twt_req(sdata, sband, link, link_sta, elems);
+ 
+-	if (ieee80211_config_bw(link, elems, true, &changed,
++	if (!elems->ch_switch_ie &&
++	    ieee80211_config_bw(link, elems, true, &changed,
+ 				IEEE80211_STYPE_BEACON)) {
+ 		ieee80211_set_disassoc(sdata, IEEE80211_STYPE_DEAUTH,
+ 				       WLAN_REASON_DEAUTH_LEAVING,
+-- 
+2.45.2
+

@@ -1,0 +1,39 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration package/kernel/mac80211/patches/subsys/410-mtk-mac80211-prevent-RTS-from-being-unexpectedly-set.patch
+# Upstream: n/a（上游风格（Michael-CY Lee/Allen Ye，未进 backports-7.2；本仓按 7.2 重基：去掉作者树多出的 const struct wiphy_radio *radio; 上下文行））—— 2026-09-12 P3-D 吸收，#EXP
+# Reason: nl80211_set_wiphy_radio()：当只带 NL80211_ATTR_WIPHY_RADIO_INDEX 而不带 RTS_THRESHOLD 时把 rts_threshold 写 0（顺带修 set txpower 失败）。改为仅在 changed 非 0 时改/回滚
+# 实证：裁剪后的 backports-7.2（上游 subsys 20 补丁 + 本仓 411）之上应用（410 已按 7.2 重基为 fuzz=0）。
+diff --git a/net/wireless/nl80211.c b/net/wireless/nl80211.c
+index 9aa8337..cb7d6b5 100644
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -4219,7 +4219,7 @@ static int nl80211_set_wiphy_radio(struct genl_info *info,
+ 				   int radio_idx)
+ {
+ 	u32 rts_threshold = 0, old_rts, changed = 0;
+-	int result;
++	int result = 0;
+ 
+ 	if (!rdev->ops->set_wiphy_params)
+ 		return -EOPNOTSUPP;
+@@ -4230,13 +4230,16 @@ static int nl80211_set_wiphy_radio(struct genl_info *info,
+ 		changed |= WIPHY_PARAM_RTS_THRESHOLD;
+ 	}
+ 
+-	old_rts = rdev->wiphy.radio_cfg[radio_idx].rts_threshold;
++	if (changed) {
++		old_rts = rdev->wiphy.radio_cfg[radio_idx].rts_threshold;
++		if (changed & WIPHY_PARAM_RTS_THRESHOLD)
++			rdev->wiphy.radio_cfg[radio_idx].rts_threshold = rts_threshold;
+ 
+-	rdev->wiphy.radio_cfg[radio_idx].rts_threshold = rts_threshold;
++		result = rdev_set_wiphy_params(rdev, radio_idx, changed);
+ 
+-	result = rdev_set_wiphy_params(rdev, radio_idx, changed);
+-	if (result)
+-		rdev->wiphy.radio_cfg[radio_idx].rts_threshold = old_rts;
++		if (result)
++			rdev->wiphy.radio_cfg[radio_idx].rts_threshold = old_rts;
++	}
+ 
+ 	return 0;
+ }

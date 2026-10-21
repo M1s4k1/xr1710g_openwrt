@@ -1,0 +1,94 @@
+diff --git a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+index 75ae948..2a0f57d 100755
+--- a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
++++ b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+@@ -110,10 +110,12 @@ get_status() {
+ 
+ 	# Read actual PLL frequency from hardware (detects overclock)
+ 	local pll_freq=0
++	local has_devmem=0
+ 	if command -v devmem > /dev/null 2>&1; then
+ 		local pcw_raw=$(devmem 0x1fa202b4 2>/dev/null)
+ 		local chg_raw=$(devmem 0x1fa202b8 2>/dev/null)
+ 		if [ -n "$pcw_raw" ] && [ -n "$chg_raw" ]; then
++			has_devmem=1
+ 			pcw_raw=$((pcw_raw))
+ 			chg_raw=$((chg_raw))
+ 			local pcw_int=$(( (pcw_raw >> 24) & 0x7F ))
+@@ -132,9 +134,12 @@ get_status() {
+ 		cpu_count=$(ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l)
+ 	fi
+ 
+-	printf '{"npu_version":"%s","npu_loaded":%s,"npu_device":"%s","npu_clock":%d,"npu_cores":%d,"offload_bound":%d,"offload_total":%d,"memory_regions":%s,"cpu_cur_freq":%d,"cpu_hw_freq":%d,"cpu_governor":"%s","cpu_avail_governors":"%s","cpu_min_freq":%d,"cpu_max_freq":%d,"cpu_avail_freqs":"%s","cpu_count":%d,"pll_freq_mhz":%d}' \
++	local pll_freq_str="${pll_freq:-0}"
++	[ "$has_devmem" -eq 0 ] && pll_freq_str="null"
++
++	printf '{"npu_version":"%s","npu_loaded":%s,"npu_device":"%s","npu_clock":%d,"npu_cores":%d,"offload_bound":%d,"offload_total":%d,"memory_regions":%s,"cpu_cur_freq":%d,"cpu_hw_freq":%d,"cpu_governor":"%s","cpu_avail_governors":"%s","cpu_min_freq":%d,"cpu_max_freq":%d,"cpu_avail_freqs":"%s","cpu_count":%d,"pll_freq_mhz":%s}' \
+ 		"${npu_ver:-Unknown}" "$npu_loaded" "${npu_device:-}" "${npu_clock:-0}" "${npu_cores:-0}" "${offload_bound:-0}" "${offload_total:-0}" "$regions" \
+-		"${cpu_cur_freq:-0}" "${cpu_hw_freq:-0}" "${cpu_governor:-unknown}" "${cpu_avail_governors:-}" "${cpu_min_freq:-0}" "${cpu_max_freq:-0}" "${cpu_avail_freqs:-}" "${cpu_count:-0}" "${pll_freq:-0}"
++		"${cpu_cur_freq:-0}" "${cpu_hw_freq:-0}" "${cpu_governor:-unknown}" "${cpu_avail_governors:-}" "${cpu_min_freq:-0}" "${cpu_max_freq:-0}" "${cpu_avail_freqs:-}" "${cpu_count:-0}" "${pll_freq_str}"
+ }
+ 
+ get_ppe_entries() {
+@@ -558,7 +563,7 @@ get_token_info() {
+ 
+ get_frame_engine() {
+ 	if ! command -v devmem > /dev/null 2>&1; then
+-		echo '{"error":"devmem not available"}'
++		echo '{"available":false,"reason":"devmem not installed"}'
+ 		return
+ 	fi
+ 
+diff --git a/package/luci-app-airoha-npu/htdocs/luci-static/resources/view/airoha_npu/status.js b/package/luci-app-airoha-npu/htdocs/luci-static/resources/view/airoha_npu/status.js
+index 329d186..f7df1e9 100644
+--- a/package/luci-app-airoha-npu/htdocs/luci-static/resources/view/airoha_npu/status.js
++++ b/package/luci-app-airoha-npu/htdocs/luci-static/resources/view/airoha_npu/status.js
+@@ -166,6 +166,7 @@ function updateBandChip(band, stats) {
+ /* ── Frame Engine Diagram (with WiFi bands, NPU, PPE flows) ── */
+ function renderFeDiagram(fe, ti, st) {
+ 	if (!fe || fe.error) return E('div', { 'class': 'soc-muted' }, 'devmem not available on this build');
++	if (fe.available === false) return E('div', { 'class': 'soc-muted' }, 'devmem not installed; register diagnostics unavailable');
+ 	ti = ti || {}; st = st || {};
+ 
+ 	var ports = Array.isArray(fe.pse_ports) ? fe.pse_ports : [];
+diff --git a/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu b/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
+index e62afba..f6d5221 100755
+--- a/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
++++ b/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
+@@ -117,10 +117,12 @@ get_status() {
+ 
+ 	# Read actual PLL frequency from hardware (detects overclock)
+ 	local pll_freq=0
++	local has_devmem=0
+ 	if command -v devmem > /dev/null 2>&1; then
+ 		local pcw_raw=$(devmem 0x1fa202b4 2>/dev/null)
+ 		local chg_raw=$(devmem 0x1fa202b8 2>/dev/null)
+ 		if [ -n "$pcw_raw" ] && [ -n "$chg_raw" ]; then
++			has_devmem=1
+ 			pcw_raw=$((pcw_raw))
+ 			chg_raw=$((chg_raw))
+ 			local pcw_int=$(( (pcw_raw >> 24) & 0x7F ))
+@@ -139,9 +141,12 @@ get_status() {
+ 		cpu_count=$(ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l)
+ 	fi
+ 
+-	printf '{"npu_version":"%s","npu_loaded":%s,"npu_device":"%s","npu_clock":%d,"npu_cores":%d,"offload_bound":%d,"offload_total":%d,"memory_regions":%s,"cpu_cur_freq":%d,"cpu_hw_freq":%d,"cpu_governor":"%s","cpu_avail_governors":"%s","cpu_min_freq":%d,"cpu_max_freq":%d,"cpu_avail_freqs":"%s","cpu_count":%d,"pll_freq_mhz":%d}' \
++	local pll_freq_str="${pll_freq:-0}"
++	[ "$has_devmem" -eq 0 ] && pll_freq_str="null"
++
++	printf '{"npu_version":"%s","npu_loaded":%s,"npu_device":"%s","npu_clock":%d,"npu_cores":%d,"offload_bound":%d,"offload_total":%d,"memory_regions":%s,"cpu_cur_freq":%d,"cpu_hw_freq":%d,"cpu_governor":"%s","cpu_avail_governors":"%s","cpu_min_freq":%d,"cpu_max_freq":%d,"cpu_avail_freqs":"%s","cpu_count":%d,"pll_freq_mhz":%s}' \
+ 		"${npu_ver:-Unknown}" "$npu_loaded" "${npu_device:-}" "${npu_clock:-0}" "${npu_cores:-0}" "${offload_bound:-0}" "${offload_total:-0}" "$regions" \
+-		"${cpu_cur_freq:-0}" "${cpu_hw_freq:-0}" "${cpu_governor:-unknown}" "${cpu_avail_governors:-}" "${cpu_min_freq:-0}" "${cpu_max_freq:-0}" "${cpu_avail_freqs:-}" "${cpu_count:-0}" "${pll_freq:-0}"
++		"${cpu_cur_freq:-0}" "${cpu_hw_freq:-0}" "${cpu_governor:-unknown}" "${cpu_avail_governors:-}" "${cpu_min_freq:-0}" "${cpu_max_freq:-0}" "${cpu_avail_freqs:-}" "${cpu_count:-0}" "${pll_freq_str}"
+ }
+ 
+ get_ppe_entries() {
+@@ -330,7 +335,7 @@ set_overclock() {
+ 	fi
+ 
+ 	if ! command -v devmem > /dev/null 2>&1; then
+-		echo '{"error":"devmem not available"}'
++		echo '{"available":false,"reason":"devmem not installed"}'
+ 		return
+ 	fi
+ 

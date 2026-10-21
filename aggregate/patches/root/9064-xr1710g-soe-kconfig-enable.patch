@@ -1,0 +1,21 @@
+# Source: XR1710G self-held（2026-09-13 F149：SOE-27/28 的**配置启用**半边）
+# Upstream: n/a（本仓 target 配置片段）
+# Reason: SOE-28 只加了带 prompt 的 `config NET_AIROHA_SOE`（`select XFRM_OFFLOAD`），
+#   而 **没有任何东西 select 它** —— 内核配置里不置 `CONFIG_NET_AIROHA_SOE=y` 时，
+#   27 号装进 Makefile 的 `airoha_soe.o`、14/15/16/25 的 SOE 钩子（都在
+#   `#if IS_REACHABLE(CONFIG_NET_AIROHA_SOE)` 内）**全部不编译**：功能为零，CI 也证不到编译。
+#   故按同文件既有先例（9035 的 `CONFIG_NET_AIROHA_FLOW_STATS=y`）在本片段补上。
+#   与 `#EXP` SOE 系列同档：只在 experimental 生效。
+#   判据：`zcat /proc/config.gz | grep NET_AIROHA_SOE` = y（实机）/ 构建日志出现 airoha_soe.o。
+# 实证：apply-patches --dry-run --oc --experimental 通过（对 9035 之后的真实累加态）。
+diff --git a/target/linux/airoha/an7581/config-6.18 b/target/linux/airoha/an7581/config-6.18
+--- a/target/linux/airoha/an7581/config-6.18
++++ b/target/linux/airoha/an7581/config-6.18
+@@ -235,6 +235,7 @@ CONFIG_NEED_SG_DMA_LENGTH=y
+ CONFIG_NET_AIROHA=m
+ CONFIG_NET_AIROHA_FLOW_STATS=y
+ CONFIG_NET_AIROHA_NPU=m
++CONFIG_NET_AIROHA_SOE=y
+ CONFIG_NET_DEVLINK=y
+ CONFIG_NET_DSA=y
+ CONFIG_NET_DSA_MT7530=m

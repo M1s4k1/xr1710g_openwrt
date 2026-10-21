@@ -1,0 +1,217 @@
+name: build
+
+# 构建：**仅手动触发**（workflow_dispatch，matrix stock/experimental/all）。
+# 上游同步不在此处——由 sync-upstream.yml 每 2h 自动校验补丁层（决策：同步越勤冲突越少）。
+# CPU 唯一档（F89，2026-09-08）：所有档位均 OPP 650–1350 + oc-auto 自动退档（1350→1300→1200）。
+# experimental 档（F25，2026-08-18）：默认档 + MANIFEST #EXP 条目，供实验补丁构建验证；
+#   'all' 聚合 release 档位（stock），experimental 单独 dispatch。
+#
+# 决策（2026-09-12）：**移除 push 自动触发**。原因：一次 push ≈ 1h 构建时长，且 workflow 未配
+#   concurrency → 连续 push 会并发堆叠多份"同一件事"的构建（旧 run 不会被自动取消），实际浪费
+#   大量 CI。改为按需手动 dispatch：
+#     gh workflow run build.yml --repo genshanxinli/xr1710g-openwrt -f profile=experimental
+#   日常流程：push（只跑 sync-upstream 的补丁层 dry-run + 守护）→ 需要固件时再手动触发构建。
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: '构建档位（stock / experimental / all）'
+        default: 'all'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          P='${{ github.event.inputs.profile || 'stock' }}'
+          case "$P" in stock|experimental|all) ;; *) echo "错误：未知档位 $P" >&2; exit 1 ;; esac
+          if [ "$P" = "all" ]; then echo "matrix={\"profile\":[\"stock\"]}" >> "$GITHUB_OUTPUT"
+          else echo "matrix={\"profile\":[\"$P\"]}" >> "$GITHUB_OUTPUT"; fi
+
+  build:
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+      fail-fast: false
+    env:
+      PROFILE: ${{ matrix.profile }}
+      TREE: ${{ github.workspace }}/openwrt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: overlay
+
+      - name: 克隆最新 openwrt master 并叠加本仓库（叠加层模型）
+        run: |
+          git clone -q --depth 1 https://github.com/openwrt/openwrt.git "$TREE"
+          rsync -a --exclude='.git' --exclude='audit-ubi2oc' --exclude='.github' --exclude='openwrt' \
+            "$GITHUB_WORKSPACE/overlay/" "$TREE/"
+          cd "$TREE" && chmod +x scripts/*.sh
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget \
+            time
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: openwrt-${{ env.PROFILE }}
+          # F166：append-timestamp=true（默认）只给**保存**键加时间戳，恢复时用的是裸前缀
+          #   `ccache-<key>-`；不显式给 restore-keys 就永远 miss —— 实证：ci-166（stock，09-13）
+          #   在 09-11 存档后仍报 "No cache found."，且该存档 last_accessed_at == created_at。
+          restore-keys: openwrt-${{ env.PROFILE }}
+          # 默认 500MB 装不下 toolchain+kernel+packages 的对象集（旧配置全程 Cache size 0.0/0.5GB）；
+          #   3G 仍远低于仓库 10GB 缓存额度
+          max-size: 3G
+
+      - name: 应用补丁层（实验档补丁）+ files overlay
+        run: |
+          cd "$TREE"
+          EXP_FLAG=""
+          [[ "$PROFILE" == "experimental" ]] && EXP_FLAG="--experimental"
+          ./scripts/apply-patches.sh . $EXP_FLAG
+          mkdir -p files && cp -rf "$GITHUB_WORKSPACE/overlay/files/." files/
+
+      - name: CPU OC（唯一档：OPP 650–1350；稳性退档由 files/etc/init.d/oc-auto 运行时兜底，F89）
+        run: |
+          cd "$TREE"
+          ./scripts/prepare-oc.sh oc .
+
+      - name: feeds
+        run: |
+          cd "$TREE"
+          cp -f feeds.conf.default feeds.conf
+          cat "$GITHUB_WORKSPACE/overlay/config/feeds.custom.conf" >> feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 配置（defconfig + seed）
+        run: |
+          cd "$TREE"
+          make defconfig
+          cat "$GITHUB_WORKSPACE/overlay/config/seed-config.diff" >> .config
+          # 实验档增量 seed：MANIFEST #EXP 补丁提供的包不在共享 seed 中（否则 stock 会引用不存在的包）。
+          # 必须在第二次 defconfig 前追加，且共享 seed 末尾保持换行（否则两段 seed 会粘成一行）。
+          if [[ "$PROFILE" == "experimental" ]]; then
+            cat "$GITHUB_WORKSPACE/overlay/config/seed-config.experimental.diff" >> .config
+          fi
+          make defconfig
+          grep -q "CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y" .config || { echo "XR1710G 目标未选中——检查 #22397 补丁与 seed"; exit 1; }
+          if [[ "$PROFILE" == "experimental" ]]; then
+            grep -q '^CONFIG_PACKAGE_bridge-hw-offload=y$' .config || { echo "实验档 bridge-hw-offload 未选入 .config（issue #1 E1）"; exit 1; }
+          fi
+          "${GITHUB_WORKSPACE}/overlay/scripts/audit-config.sh" "${GITHUB_WORKSPACE}/overlay/config/seed-config.diff" .config
+          if [[ "$PROFILE" == "experimental" ]]; then
+            "${GITHUB_WORKSPACE}/overlay/scripts/audit-config.sh" "${GITHUB_WORKSPACE}/overlay/config/seed-config.experimental.diff" .config
+          fi
+          # F166（2026-09-14，构建缓存）：启用 ccache，**必须追加在最后一次 defconfig 之后** ——
+          #   CONFIG_CCACHE 的 prompt 是 `if DEVEL`（config/Config-devel.in:135），DEVEL=n 时 kconfig
+          #   会把它解析回 n；而后续 make 只读 .config 文本（rules.mk:347 `ifneq ($(CONFIG_CCACHE),)`），
+          #   追加即生效（上游同款：openwrt/actions-shared-workflows → reusable_build.yml:566）。
+          # CONFIG_CCACHE_DIR 必须指到 cache action 的目录：action 固定用 $GITHUB_WORKSPACE/.ccache，
+          #   而 OpenWrt 默认是 $TREE/.ccache（rules.mk:354）—— 不指则 ccache 写进树内、快照里恒空
+          #   （旧配置实证：构建 72 min 后 `ccache -s` 仍为 Cache size 0.0/0.5GB）。
+          echo 'CONFIG_CCACHE=y' >> .config
+          echo "CONFIG_CCACHE_DIR=\"$GITHUB_WORKSPACE/.ccache\"" >> .config
+          grep -q '^CONFIG_CCACHE=y$' .config || { echo "CONFIG_CCACHE 未进 .config —— 构建缓存会静默失效（F166）"; exit 1; }
+
+      - name: 构建
+        # F19：显式 pipefail——make 失败必须红（默认 bash 无 pipefail，`make | tee` 会把失败吞成假绿；
+        #   曾导致 2026-08-17 三次构建（openssl 下载失败）全部假绿、firmware artifact 从未产出）
+        run: |
+          set -euo pipefail
+          cd "$TREE"
+          # E2：DISTRIB_DESCRIPTION 注入档位标识（CONFIG_VERSION_DIST 经 include/version.mk 进入 /etc/openwrt_release）
+          make -j"$(nproc)" V=s CONFIG_VERSION_DIST="OpenWrt $PROFILE" 2>&1 | tee "$GITHUB_WORKSPACE/build-$PROFILE.log"
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ env.PROFILE }}
+          path: build-${{ env.PROFILE }}.log
+
+      - name: 上传固件产物（sysupgrade + 首刷/initramfs）
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ env.PROFILE }}
+          # F19：构建成功但无 itb 产物 = 静默失败（如目标未选中/打包异常），必须红
+          if-no-files-found: error
+          path: |
+            ${{ env.TREE }}/bin/targets/airoha/an7581/*.itb
+            ${{ env.TREE }}/bin/targets/airoha/an7581/*.manifest
+            !${{ env.TREE }}/bin/targets/airoha/an7581/*-factory*
+
+  # P4（ROADMAP）：构建产出自动 pre-release。仅手动 dispatch 生成（push 触发只做门禁，
+  # 不刷 release 噪音）；matrix 全档成功后才聚合发布，一个 run 一个 tag。
+  release:
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # F24（2026-08-17）：checkout 必须在 download 之前——download-artifact 先跑的话，
+      # 后续 checkout 的默认 clean:true 会把 _rel/（未跟踪）清掉，softprops 报
+      # "Pattern '_rel/**' does not match any files"（ci-26 首次空壳，真产物手动补传）。
+      # fetch-depth: 0（F25 2026-08-18）：默认 depth=1 无 tag，git describe 失败
+      # → release 备注恒显示"（首次）"；全量取回让 prev tag 正常显示。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 下载全档固件产物
+        uses: actions/download-artifact@v4
+        with:
+          path: _rel
+          pattern: firmware-*
+          # 不用 merge-multiple：同名 itb（openwrt-...-sysupgrade.itb 等）三档同名，
+          # 合并会互相覆盖只剩一套——保留 firmware-<profile>/ 子目录结构，三档全保留
+      - name: 生成 release 备注（自上次 tag 的提交 + FIXES 台账头部）
+        id: notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 2>/dev/null || echo '（首次）')
+          {
+            echo "### 自上次版本（$prev）以来的提交"
+            git log --oneline -30 --no-merges
+            echo
+            echo "### 修复台账最近变更"
+            sed -n '1,4p' docs/FIXES.md
+            echo
+            echo "### 刷机提醒"
+            echo "请核对 docs/FLASHING.md（HTTP U-Boot 主路径，锁版 SHA256 以 YYH2913 release 页为准）。"
+            echo
+            echo "### 产物说明"
+            echo "firmware-<profile>.tar.gz 各档打包产物（sysupgrade + initramfs + chainload-uboot + manifest）；本次档位：${{ github.event.inputs.profile }}。"
+          } > relnotes.md
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: 打包各档产物（同名 itb 会被 softprops 按 basename 去重覆盖——先打包避免资产冲突）
+        run: |
+          cd _rel
+          for d in firmware-*/; do
+            [ -d "$d" ] || continue
+            profile="${d%/}"
+            tar -czf "${profile}.tar.gz" "$d"
+          done
+
+      - name: 创建 pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.run_number }}
+          name: "CI 构建 #${{ github.run_number }}（${{ github.ref_name }} @ ${{ steps.notes.outputs.prev }} 起）"
+          body_path: relnotes.md
+          files: _rel/*.tar.gz
+          prerelease: true

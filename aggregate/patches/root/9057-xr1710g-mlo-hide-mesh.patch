@@ -1,0 +1,47 @@
+diff --git a/luci-app-mlo/patches/001-xr1710g-mlo-hide-mesh.patch b/luci-app-mlo/patches/001-xr1710g-mlo-hide-mesh.patch
+new file mode 100644
+--- /dev/null
++++ b/luci-app-mlo/patches/001-xr1710g-mlo-hide-mesh.patch
+@@ -0,0 +1,42 @@
++# Source: orangeyoo patches/luci/0660-xr1710g-mlo-hide-mesh-ifaces.patch（2026-09-12 P2 吸收）
++# Upstream: n/a（luci-app-mlo 为本仓 9017 携带的第三方包，上游无此页面）
++# Reason: MLO 编辑页把**所有** wifi-iface 列进可编辑的 AP/STA 网格；802.11s mesh 回程接口
++#   一旦被选中，会被通用 AP/STA 表单改写 mode/ssid/network → 6GHz 回程静默断开。
++#   修法：① GridSection 过滤 `optionValue(section_id,'mode') != 'mesh'`；② 存在 mesh 接口时
++#   在页面顶部插一条提示，指向 Network - Wireless（唯一受支持的 mesh 编辑入口）。
++# 基线：本仓 9017 内 mlo.js（693 行）与 0660 的插入点**逐字吻合**——实测在抽取出的
++#   mlo.js 上 `patch -p1 --fuzz=0` 干净应用；两个 hunk 分别在 450 行后（sectiontitle 之后、
++#   quickAdd 之前）与 688 行后（refreshRuntime 之前）。
++# 顺序：置于 9017 之后（本补丁改的是 9017 生成的文件）。
++# 档位 default：纯前端只读过滤 + 提示，无副作用；本仓当前无 mesh 接口，故对现网零影响。
++# 判据：构建后 `grep -c "mode') != 'mesh'" luci-app-mlo/htdocs/luci-static/resources/view/mlo.js` = 1；
++#   实机造 `wireless.mesh6`（mode=mesh）后打开 MLO 页面：网格不出现该接口且有提示；
++#   `uci show wireless.mesh6.mode` 仍为 mesh。
++--- a/luci-app-mlo/htdocs/luci-static/resources/view/mlo.js
+++++ b/luci-app-mlo/htdocs/luci-static/resources/view/mlo.js
++@@ -450,6 +450,13 @@
++ 				section_id;
++ 		};
++ 
+++		/* 802.11s mesh backhaul interfaces are managed exclusively
+++		 * from Network -> Wireless; never expose them to the AP/STA
+++		 * editor on this page. */
+++		s.filter = function(section_id) {
+++			return optionValue(section_id, 'mode') != 'mesh';
+++		};
+++
++ 		quickAdd = function(mode) {
++ 			let selectedRadios = radios.slice(0, 2).map(r => r['.name']);
++ 			let sid;
++@@ -681,6 +688,11 @@
++ 				function() { return refreshRuntime(nodes); }),
++ 			nodes.firstChild);
++ 
+++			if (uci.sections('wireless', 'wifi-iface').some(w => w.mode == 'mesh'))
+++				nodes.insertBefore(E('div', { 'class': 'alert-message notice' },
+++					E('p', _('802.11s mesh backhaul interfaces are hidden on this page. Manage them from Network - Wireless.'))),
+++					nodes.firstChild);
+++
++ 			return refreshRuntime(nodes).then(function() {
++ 				poll.add(function() {
++ 					return refreshRuntime(nodes);

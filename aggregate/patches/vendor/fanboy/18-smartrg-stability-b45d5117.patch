@@ -1,0 +1,418 @@
+From b45d5117cf56bb39697e2249f90d04c5ecb2417b Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Sun, 9 Aug 2026 07:53:16 -1000
+Subject: [PATCH] airoha: adapt smartrg 992-20/992-21 patches (@cmonroe) for
+ w1700k
+
+What 992-20-net-airoha-stability.patch does (drivers/net/ethernet/airoha/
+airoha_eth.c + airoha_eth.h):
+
+* Source-port routing in airoha_en7581_get_dev_from_sport() and
+  airoha_an7583_get_dev_from_sport(): map pingpong (sport 0x0..0x1) and
+  npu pingpong (sport 0x7) hardware source ports to GDM1 (port 0) the
+  same way GDM1 (sport 0x10..0x14) is already handled. Previously these
+  sports fell through to the default, returned -EINVAL, and
+  airoha_qdma_get_gdm_dev() translated that into ERR_PTR(-ENODEV) ->
+  packet drop. PON-internalised and NPU-tunneled RX traffic is now
+  delivered to the LAN path instead of being silently dropped.
+
+* RX IRQ bank-0 routing: RX_IRQ0_BANK_PIN_MASK changes 0x839f ->
+  0xbb9f, adding BIT(11)|BIT(12)|BIT(13) to bank-0's RX DONE IRQ enable
+  in airoha_qdma_hw_init(). All 32 RX queues get descriptors reserved
+  because airoha_qdma_init_rx() iterates the full 32 entries against
+  the all-ones RX_DONE_INT_MASK; the bit-selective IRQ bank mask,
+  however, was upstream only enabling RX DONE interrupts for queues
+  {0..4, 7..9, 15} (in bank-0), {21..30} (bank-1), and {5, 6} (banks
+  2/3), leaving queues {10..14} descriptor-allocated but IRQ-masked
+  - any packet landing there would never schedule NAPI. queue 11
+  already gets 128 descriptors (RX_DSCP_NUM(11)==128 upstream) and
+  queues 10,12,13,14 get the 16-descriptor default; this patch wires
+  the DONE IRQs of 11,12,13 onto bank-0 so that traffic those queues
+  do receive actually triggers RX NAPI. No effect if the w1700k never
+  steers traffic onto those queues; harmless on the idle path.
+
+* TX queue locking: spin_lock_bh/spin_unlock_bh -> spin_lock_irq/
+  spin_unlock_irq on q->lock in airoha_qdma_tx_irq(),
+  airoha_qdma_tx_flush(), and the q->lock acquisition paths inside
+  airoha_tx_xmit() (xmit entry, tx-stopped early exit, xmit success
+  exit, error-unlock fall-through). The lock is taken from NAPI poll
+  (softirq) and from ndo_start_xmit (process context with bh disabled);
+  it is never acquired from the airoha_irq_handler hard-IRQ handler,
+  which only schedules NAPI. The _irq variant is therefore strictly
+  more conservative than necessary; it's retained as a defensive
+  hardening against softirq/runtime races observed in the original
+  SmartRG stream the patches were sourced from.
+
+* TRTCM parameter write: airoha_qdma_set_trtcm_param() now wraps the
+  REG_TRTCM_DATA_LOW/REG_TRTCM_CFG_PARAM write pair in a do/while
+  retry loop (up to 100 iterations) that does a write barrier and then
+  re-reads via airoha_qdma_get_trtcm_param() to verify the value
+  landed, breaking on match. This covers an observed silicon write-
+  race on the egress TRTCM rate/bucket registers; the final
+  read_poll_timeout wait for TRTCM_PARAM_RW_DONE is unchanged. Pure
+  MMIO writeback safety net for token-bucket parameter programming
+  via the QDMA TRTCM register block.
+
+* ethtool/ethtool_stats groundwork: add union airoha_qdma_count {rx{
+  rx_count, rx_error_count}, tx{tx_count, tx_error_count}} plus a count
+  member on struct airoha_queue. RX loop bumps rx_count on success and
+  rx_error_count on the free_frag path; TX IRQ loop bumps tx_count.
+  No reader is currently present in this tree (the consumer lived in
+  the trimmed-out extra_ops.ethtool_stats hook); the counters are
+  write-only placeholders so future debug-stat consumers can be wired
+  in without further header churn. Renamed patch keeps them since
+  the struct addition is layout-neutral and the increments are cheap.
+
+Explicitly NOT carried over from the smartrg B001 patch:
+  - struct arht_extra_ops and all eth->extra_ops.* call sites
+    (arht_rx_handler, arht_tx_handler, arht_hw_init, get_qdma_channel,
+     get_qdma_buf_size, set_mac_addr, set_bucket_size, modify_ppe_entry,
+     update_shrink_table, set_flow_dst, get_gdm_dev, tx_modified,
+     sel_phy_external, support_eth_monitor, set_channel_retire,
+     set_qdma_regs, set_qbi_fttr_chn, set_fe_regs, set_ppe_dft_cport,
+     rx_dscp_num_init, ppe_exit, ethtool_stats)
+  - pcs-handle_OF-phandle parse / dev->xfi_mac dev_get_regmap() lookup
+    (the upstream airoha PCS driver registers regmaps named pcs_mac,
+    hsgmii_an, hsgmii_pcs, multi_sgmii, usxgmii, pcs_pma, pcs_ana -
+    never "xfi_mac" - so the lookup would always silently set
+    dev->xfi_mac = NULL; dead code)
+  - struct airoha_foe_bridge32, struct hop_info, struct action_info
+    FOE entry layout refactor + field access changes
+  - u32 meter -> u16 meter + u16 tunnel_mtu FOE entry field split
+    (and the matching *tunnel_mtu |= FIELD_PREP(AIROHA_FOE_TUNNEL_MTU
+    >> 16, ...) write in airoha_ppe.c)
+  - The non-static promotion of airoha_ppe_foe_get_entry_hash,
+    airoha_ppe_foe_get_entry_locked, airoha_ppe_foe_compare_entry,
+    airoha_ppe_foe_commit_entry, airoha_ppe_offload_setup, and
+    airoha_qdma_get_trtcm_param
+  - AIROHA_MAX_NUM_CHANNELS=32, AIROHA_NUM_NETDEV_TX_RINGS widening,
+    AIROHA_NUM_QOS_CHANNELS -> AIROHA_MAX_NUM_CHANNELS in the HTB
+    tc_classid modulo paths and DECLARE_BITMAP widths
+    (would let user space allocate up to 32 HTB QoS channels while
+     the w1700k's EN7581 QDMA meter/group budget is not verified to
+     support that many; left at upstream AIROHA_NUM_QOS_CHANNELS=4)
+  - HW_DSCP_NUM 2048 -> 16384 (8x larger reserved-memory DMA pool for
+    hardware-forwarding descriptors - not paid for in the w1700k DTS
+    reserved-memory reservation)
+  - LRO_RX_DSCP_NUM=128, AIROHA_HEADROOM, AIROHA_MAC_ADDR_NUM=7,
+    FE_GDM_GDMA1..4 enum, FE_PSE_PORT_MCST=0xe, AIROHA_RXD4_SPORT
+  - enum airoha_serdes_idx + dma_srcport/fport/nbq/chnl/retire_channel/
+    gdm routing tables on airoha_eth_soc_data
+  - ppe_sram_etry_num, qdma_init, work_started, meter_enable,
+    reduce_memory fields on airoha_eth
+  - dev->xfi_mac, port->eth fields and their assignments
+  - enum magic {PON, ETH2, LAN1..4} and the e_magic/tx_modified/
+    ingress_dev_idx/tid fields on airoha_flow_table_entry
+
+What 992-21-net-airoha-npu-init-stability.patch does (drivers/net/
+ethernet/airoha/airoha_npu.c):
+
+* WLAN mailbox retry wrapper: factor airoha_npu_wlan_cmd_with_retry():
+  3 retries with mdelay(10) between attempts; each attempt dispatches
+  either airoha_npu_wlan_msg_send() (when is_msg_send) or
+  airoha_npu_wlan_set_reserved_memory() (otherwise). Returns last
+  error on exhaustion or 0 on success. Routes the five wlan mailbox
+  setup commands in airoha_npu_wlan_init_memory()
+  (WLAN_FUNC_SET_WAIT_NPU_BAND0_ONCPU,
+   WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR,
+   WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR,
+   WLAN_FUNC_SET_WAIT_TX_PKT_BUF_ADDR, and
+   WLAN_FUNC_SET_WAIT_IS_FORCE_TO_CPU) through the wrapper so any
+  transient mailbox failure is retried rather than aborting wlan
+  bring-up outright. The WLAN_FUNC_SET_WAIT_DRAM_BA_NODE_ADDR op
+  (conditional on memory-region-names "ba") is left single-shot,
+  matching upstream.
+
+* Mailbox wait timeout: airoha_npu_send_msg() regmap_read_poll_timeout
+  timeout is reduced 1000 * MSEC_PER_SEC -> 500 * MSEC_PER_SEC. The
+  3-retry wrapper preserves the same aggregate worst-case wait
+  budget while giving up on a hung mailbox sooner so the retry pass
+  can re-issue.
+
+Explicitly NOT carried over from the smartrg B002 patch:
+  - airoha_npu.h header extraction (kept macros/enums/structs local
+    in airoha_npu.c)
+  - airoha_npu_wait_init_complete() init-completion gate (CR_NPU_MIB31 /
+    INIT_COMPELET poll in airoha_npu_wlan_init_memory)
+  - non-static promotion of airoha_npu_send_msg,
+    airoha_npu_wlan_msg_send, airoha_npu_wlan_msg_get
+  - PPE_FUNC_SET_WAIT_L4S_SETUP enum entry, struct ppe_mbox_data.l4s_info,
+    struct tr471_mbox_data, WLAN_MAX_STATS_SIZE
+  - extern declarations airoha_npu_l4s_setup and airoha_npu_extra_init
+---
+ .../992-20-net-airoha-stability.patch         | 184 ++++++++++++++++++
+ ...992-21-net-airoha-npu-init-stability.patch |  83 ++++++++++
+ 2 files changed, 267 insertions(+)
+ create mode 100644 target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
+ create mode 100644 target/linux/airoha/patches-6.18/992-21-net-airoha-npu-init-stability.patch
+
+diff --git a/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch b/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
+new file mode 100644
+index 00000000000000..1377acdbff899c
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
+@@ -0,0 +1,184 @@
++--- a/drivers/net/ethernet/airoha/airoha_eth.c
+++++ b/drivers/net/ethernet/airoha/airoha_eth.c
++@@ -976,11 +976,13 @@ static int airoha_qdma_rx_process(struct
++ 					     false);
++ 
++ 		done++;
+++		q->count.rx.rx_count++;
++ 		napi_gro_receive(&q->napi, q->skb);
++ 		q->skb = NULL;
++ 		continue;
++ free_frag:
++ 		if (q->skb) {
+++			q->count.rx.rx_error_count++;
++ 			dev_kfree_skb(q->skb);
++ 			q->skb = NULL;
++ 		}
++@@ -1221,12 +1223,13 @@ static int airoha_qdma_tx_napi_poll(stru
++ 		q = &qdma->q_tx[qid];
++ 		if (!q->ndesc)
++ 			continue;
+++		q->count.tx.tx_count++;
++ 
++ 		index = FIELD_GET(IRQ_DESC_IDX_MASK, val);
++ 		if (index >= q->ndesc)
++ 			continue;
++ 
++-		spin_lock_bh(&q->lock);
+++		spin_lock_irq(&q->lock);
++ 
++ 		if (!q->queued)
++ 			goto unlock;
++@@ -1271,7 +1274,7 @@ static int airoha_qdma_tx_napi_poll(stru
++ 		}
++ 
++ unlock:
++-		spin_unlock_bh(&q->lock);
+++		spin_unlock_irq(&q->lock);
++ 	}
++ 
++ 	if (done) {
++@@ -1390,7 +1393,7 @@ static void airoha_qdma_cleanup_tx_queue
++ 	int i, qid = q - &qdma->q_tx[0];
++ 	u16 index = 0;
++ 
++-	spin_lock_bh(&q->lock);
+++	spin_lock_irq(&q->lock);
++ 	for (i = 0; i < q->ndesc; i++) {
++ 		struct airoha_queue_entry *e = &q->entry[i];
++ 		struct airoha_qdma_desc *desc = &q->desc[i];
++@@ -1431,7 +1434,7 @@ static void airoha_qdma_cleanup_tx_queue
++ 	airoha_qdma_rmw(qdma, REG_TX_DMA_IDX(qid), TX_RING_DMA_IDX_MASK,
++ 			FIELD_PREP(TX_RING_DMA_IDX_MASK, index));
++ 
++-	spin_unlock_bh(&q->lock);
+++	spin_unlock_irq(&q->lock);
++ }
++ 
++ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
++@@ -2610,7 +2613,7 @@ static netdev_tx_t airoha_dev_xmit(struc
++ 	if (WARN_ON_ONCE(!q->ndesc))
++ 		goto error;
++ 
++-	spin_lock_bh(&q->lock);
+++	spin_lock_irq(&q->lock);
++ 
++ 	txq = skb_get_tx_queue(netdev, skb);
++ 	nr_frags = 1 + skb_shinfo(skb)->nr_frags;
++@@ -2619,7 +2622,7 @@ static netdev_tx_t airoha_dev_xmit(struc
++ 		/* not enough space in the queue */
++ 		netif_tx_stop_queue(txq);
++ 		q->txq_stopped = true;
++-		spin_unlock_bh(&q->lock);
+++		spin_unlock_irq(&q->lock);
++ 		rcu_read_unlock();
++ 
++ 		return NETDEV_TX_BUSY;
++@@ -2683,7 +2686,7 @@ static netdev_tx_t airoha_dev_xmit(struc
++ 				TX_RING_CPU_IDX_MASK,
++ 				FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
++ 
++-	spin_unlock_bh(&q->lock);
+++	spin_unlock_irq(&q->lock);
++ 	rcu_read_unlock();
++ 
++ 	return NETDEV_TX_OK;
++@@ -2696,7 +2699,7 @@ error_unmap:
++ 	}
++ 	list_splice(&tx_list, &q->tx_list);
++ 
++-	spin_unlock_bh(&q->lock);
+++	spin_unlock_irq(&q->lock);
++ error:
++ 	dev_kfree_skb_any(skb);
++ 	netdev->stats.tx_dropped++;
++@@ -3075,6 +3078,8 @@ static int airoha_qdma_set_trtcm_param(s
++ 				       u32 addr, enum trtcm_param_type param,
++ 				       enum trtcm_mode_type mode, u32 val)
++ {
+++	u32 value_lo = 0, value_hi = 0;
+++	int retry_num = 100;
++ 	u32 idx = QDMA_METER_IDX(channel), group = QDMA_METER_GROUP(channel);
++ 	u32 config = TRTCM_PARAM_RW_MASK |
++ 		     FIELD_PREP(TRTCM_PARAM_TYPE_MASK, param) |
++@@ -3082,8 +3087,15 @@ static int airoha_qdma_set_trtcm_param(s
++ 		     FIELD_PREP(TRTCM_PARAM_INDEX_MASK, idx) |
++ 		     FIELD_PREP(TRTCM_PARAM_RATE_TYPE_MASK, mode);
++ 
++-	airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
++-	airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
+++	do {
+++		airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
+++		wmb();
+++		airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
+++		airoha_qdma_get_trtcm_param(qdma, channel, addr, param, mode,
+++					    &value_lo, &value_hi);
+++		if (val == value_lo)
+++			break;
+++	} while (--retry_num);
++ 
++ 	return read_poll_timeout(airoha_qdma_rr, val,
++ 				 val & TRTCM_PARAM_RW_DONE_MASK,
++@@ -4242,8 +4254,10 @@ static int airoha_en7581_get_dev_from_sp
++ 
++ 	*dev = 0;
++ 	switch (sport) {
++-	case 0x10 ... 0x14:
++-		*port = 0; /* GDM1 */
+++	case 0x0 ... 0x1:	/* pingpong */
+++	case 0x7:		/* npu pingpong */
+++	case 0x10 ... 0x14:	/* GDM1 */
+++		*port = 0;
++ 		break;
++ 	case 0x2 ... 0x4:
++ 		*port = sport - 1;
++@@ -4323,8 +4337,10 @@ static int airoha_an7583_get_dev_from_sp
++ 
++ 	*dev = 0;
++ 	switch (sport) {
++-	case 0x10 ... 0x14:
++-		*port = 0; /* GDM1 */
+++	case 0x0 ... 0x1:	/* pingpong */
+++	case 0x7:		/* npu pingpong */
+++	case 0x10 ... 0x14:	/* GDM1 */
+++		*port = 0;
++ 		break;
++ 	case 0x2 ... 0x4:
++ 		*port = sport - 1;
++--- a/drivers/net/ethernet/airoha/airoha_eth.h
+++++ b/drivers/net/ethernet/airoha/airoha_eth.h
++@@ -195,6 +195,17 @@ struct airoha_queue_entry {
++ 	u16 dma_len;
++ };
++ 
+++union airoha_qdma_count {
+++	struct {
+++		u32 rx_count;
+++		u32 rx_error_count;
+++	} rx;
+++	struct {
+++		u32 tx_count;
+++		u32 tx_error_count;
+++	} tx;
+++};
+++
++ struct airoha_queue {
++ 	struct airoha_qdma *qdma;
++ 
++@@ -216,6 +227,7 @@ struct airoha_queue {
++ 	struct sk_buff *skb;
++ 
++ 	struct list_head tx_list;
+++	union airoha_qdma_count count;
++ };
++ 
++ struct airoha_tx_irq_queue {
++@@ -514,7 +526,7 @@ struct airoha_wdma_info {
++ };
++ 
++ /* RX queue to IRQ mapping: BIT(q) in IRQ(n) */
++-#define RX_IRQ0_BANK_PIN_MASK			0x839f
+++#define RX_IRQ0_BANK_PIN_MASK			0xbb9f
++ #define RX_IRQ1_BANK_PIN_MASK			0x7fe00000
++ #define RX_IRQ2_BANK_PIN_MASK			0x20
++ #define RX_IRQ3_BANK_PIN_MASK			0x40
+diff --git a/target/linux/airoha/patches-6.18/992-21-net-airoha-npu-init-stability.patch b/target/linux/airoha/patches-6.18/992-21-net-airoha-npu-init-stability.patch
+new file mode 100644
+index 00000000000000..e1195d809e9abd
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/992-21-net-airoha-npu-init-stability.patch
+@@ -0,0 +1,74 @@
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -549,29 +549,55 @@ airoha_npu_wlan_set_reserved_memory(stru
++ 					sizeof(val), GFP_KERNEL);
++ }
++ 
+++static int airoha_npu_wlan_cmd_with_retry(struct airoha_npu *npu, int ifindex,
+++					  enum airoha_npu_wlan_set_cmd cmd,
+++					  const char *name, int is_msg_send,
+++					  u32 *val)
+++{
+++	int err = 0, retry_cnt = 3;
+++
+++	while (retry_cnt) {
+++		if (is_msg_send)
+++			err = airoha_npu_wlan_msg_send(npu, ifindex, cmd, val,
+++						       sizeof(*val),
+++						       GFP_KERNEL);
+++		else
+++			err = airoha_npu_wlan_set_reserved_memory(npu, ifindex,
+++								  name, cmd);
+++		if (!err)
+++			break;
+++		mdelay(10);
+++		retry_cnt--;
+++	}
+++	mdelay(10);
+++	if (!retry_cnt)
+++		return err;
+++	return 0;
+++}
+++
++ static int airoha_npu_wlan_init_memory(struct airoha_npu *npu)
++ {
++ 	enum airoha_npu_wlan_set_cmd cmd = WLAN_FUNC_SET_WAIT_NPU_BAND0_ONCPU;
++ 	u32 val = 0;
++ 	int err;
++ 
++-	err = airoha_npu_wlan_msg_send(npu, 1, cmd, &val, sizeof(val),
++-				       GFP_KERNEL);
+++	err = airoha_npu_wlan_cmd_with_retry(npu, 1, cmd, "band0_oncpu", 1,
+++					    &val);
++ 	if (err)
++ 		return err;
++ 
++ 	cmd = WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR;
++-	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "tx-bufid", cmd);
+++	err = airoha_npu_wlan_cmd_with_retry(npu, 0, cmd, "tx-bufid", 0, NULL);
++ 	if (err)
++ 		return err;
++ 
++ 	cmd = WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR;
++-	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "pkt", cmd);
+++	err = airoha_npu_wlan_cmd_with_retry(npu, 0, cmd, "pkt", 0, NULL);
++ 	if (err)
++ 		return err;
++ 
++ 	cmd = WLAN_FUNC_SET_WAIT_TX_PKT_BUF_ADDR;
++-	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "tx-pkt", cmd);
+++	err = airoha_npu_wlan_cmd_with_retry(npu, 0, cmd, "tx-pkt", 0, NULL);
++ 	if (err)
++ 		return err;
++ 
++@@ -584,8 +610,8 @@ static int airoha_npu_wlan_init_memory(s
++ 	}
++ 
++ 	cmd = WLAN_FUNC_SET_WAIT_IS_FORCE_TO_CPU;
++-	return airoha_npu_wlan_msg_send(npu, 0, cmd, &val, sizeof(val),
++-					GFP_KERNEL);
+++	return airoha_npu_wlan_cmd_with_retry(npu, 0, cmd, "force_to_cpu", 1,
+++					      &val);
++ }
++ 
++ static u32 airoha_npu_wlan_queue_addr_get(struct airoha_npu *npu, int qid,

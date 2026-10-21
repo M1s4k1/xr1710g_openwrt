@@ -1,0 +1,210 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration mt76/0147 + 0155（Yanghan Ye, 2026-08-06/07）
+#   —— 2026-09-12 P3-B 吸收，**合并 YYH 0147 + 0155 为一个补丁**（#EXP）
+# Upstream: n/a（作者自持；mt76 上游无对应提交）
+# Reason: NPU mailbox 在 reserved-memory 或 MT7996 hw setup 期卡住时，mt76 会放弃 NPU
+#   offload（PCI probe 忽略失败继续跑），SER 也只剩部分状态。修法：抽出
+#   mt7996_npu_hw_init_once()；失败为 -ETIMEDOUT/-EAGAIN 时调用 provider 的
+#   airoha_npu_recover()/airoha_npu_wait_recovery() 后**重试一次**（不循环）；
+#   非超时类错误直接返回。0147 单独落地会把 -EAGAIN 也当作"可 recover"，
+#   而 -EAGAIN 的语义是"已有 recovery 进行中"（应 wait）——两补丁合并后
+#   mt7996_npu_prepare_retry() 成为唯一 retry 入口，语义干净。
+# 前置：本仓 9061（内核侧 airoha_npu_recover/wait_recovery）。
+# 顺序：必须最先（0147 < 0153 < 0154 < …）。实证：对 be5ce791 + 本仓 mt76 内层全序 fuzz=0。
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index b8006b87..cbf1281a 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -513,15 +513,11 @@ int mt7996_npu_rx_queues_init(struct mt7996_dev *dev)
+ 				      &dev->mt76.q_rx[MT_RXQ_NPU1]);
+ }
+ 
+-int __mt7996_npu_hw_init(struct mt7996_dev *dev)
++static int mt7996_npu_hw_init_once(struct mt7996_dev *dev,
++				   struct airoha_npu *npu)
+ {
+-	struct airoha_npu *npu;
+ 	int i, err;
+ 
+-	npu = rcu_dereference_protected(dev->mt76.mmio.npu, &dev->mt76.mutex);
+-	if (!npu)
+-		return 0;
+-
+ 	err = mt7996_npu_offload_init(dev, npu);
+ 	if (err)
+ 		return err;
+@@ -556,6 +552,59 @@ int __mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 	return 0;
+ }
+ 
++static int mt7996_npu_prepare_retry(struct mt7996_dev *dev,
++				    struct airoha_npu *npu, int err,
++				    const char *operation)
++{
++	if (err == -EAGAIN) {
++		dev_warn(dev->mt76.dev,
++			 "%s interrupted by NPU recovery, waiting\n", operation);
++		err = airoha_npu_wait_recovery(npu);
++		if (err)
++			dev_err(dev->mt76.dev, "NPU recovery failed: %d\n", err);
++
++		return err;
++	}
++
++	if (err != -ETIMEDOUT)
++		return err;
++
++	dev_warn(dev->mt76.dev, "%s timed out, recovering core 0\n",
++		 operation);
++	err = airoha_npu_recover(npu);
++	if (err)
++		dev_err(dev->mt76.dev, "failed to recover NPU core 0: %d\n",
++			err);
++
++	return err;
++}
++
++int __mt7996_npu_hw_init(struct mt7996_dev *dev)
++{
++	struct airoha_npu *npu;
++	int err;
++
++	npu = rcu_dereference_protected(dev->mt76.mmio.npu, &dev->mt76.mutex);
++	if (!npu)
++		return 0;
++
++	err = mt7996_npu_hw_init_once(dev, npu);
++	if (err != -ETIMEDOUT && err != -EAGAIN)
++		return err;
++
++	err = mt7996_npu_prepare_retry(dev, npu, err,
++				       "NPU hardware initialization");
++	if (err)
++		return err;
++
++	err = mt7996_npu_hw_init_once(dev, npu);
++	if (err)
++		dev_err(dev->mt76.dev,
++			"NPU hardware initialization retry failed: %d\n", err);
++
++	return err;
++}
++
+ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ {
+ 	int i, err;
+@@ -591,39 +640,51 @@ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 	return err;
+ }
+ 
+-int mt7996_npu_hw_stop(struct mt7996_dev *dev)
++static int mt7996_npu_hw_stop_once(struct airoha_npu *npu)
+ {
+-	struct airoha_npu *npu;
+-	int i, err = 0;
++	int i, err;
+ 	u32 info;
+ 
+-	mutex_lock(&dev->mt76.mutex);
+-
+-	npu = rcu_dereference_protected(dev->mt76.mmio.npu, &dev->mt76.mutex);
+-	if (!npu)
+-		goto unlock;
+-
+ 	err = mt76_npu_send_msg(npu, 4, WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+ 				0, GFP_KERNEL);
+ 	if (err)
+-		goto unlock;
++		return err;
+ 
+ 	for (i = 0; i < 10; i++) {
+ 		err = mt76_npu_get_msg(npu, 3, WLAN_FUNC_GET_WAIT_NPU_INFO,
+ 				       &info, GFP_KERNEL);
+-		if (!err && !info)
++		if (err)
++			return err;
++		if (!info)
+ 			break;
+ 
+-		err = -ETIMEDOUT;
+ 		usleep_range(10000, 15000);
+ 	}
++	if (i == 10)
++		return -ETIMEDOUT;
+ 
+-	if (!err)
+-		err = mt76_npu_send_msg(npu, 6,
+-					WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+-					0, GFP_KERNEL);
+-	else
+-		dev_err(dev->mt76.dev, "npu stop failed\n");
++	return mt76_npu_send_msg(npu, 6,
++				 WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
++				 0, GFP_KERNEL);
++}
++
++int mt7996_npu_hw_stop(struct mt7996_dev *dev)
++{
++	struct airoha_npu *npu;
++	int err = 0;
++
++	mutex_lock(&dev->mt76.mutex);
++
++	npu = rcu_dereference_protected(dev->mt76.mmio.npu, &dev->mt76.mutex);
++	if (!npu)
++		goto unlock;
++
++	err = mt7996_npu_hw_stop_once(npu);
++	if (err == -ETIMEDOUT || err == -EAGAIN) {
++		err = mt7996_npu_prepare_retry(dev, npu, err, "NPU stop");
++		if (!err)
++			err = mt7996_npu_hw_stop_once(npu);
++	}
+ unlock:
+ 	mutex_unlock(&dev->mt76.mutex);
+ 
+diff --git a/npu.c b/npu.c
+index 24a7c420..4debf5e2 100644
+--- a/npu.c
++++ b/npu.c
+@@ -473,6 +473,7 @@ int mt76_npu_init(struct mt76_dev *dev, phys_addr_t phy_addr, int type)
+ {
+ 	struct airoha_ppe_dev *ppe_dev;
+ 	struct airoha_npu *npu;
++	bool retry;
+ 	int err = 0;
+ 
+ 	mutex_lock(&dev->mutex);
+@@ -500,6 +501,33 @@ int mt76_npu_init(struct mt76_dev *dev, phys_addr_t phy_addr, int type)
+ 	}
+ 
+ 	err = airoha_npu_wlan_init_reserved_memory(npu);
++	retry = err == -ETIMEDOUT || err == -EAGAIN;
++	if (err == -EAGAIN) {
++		dev_warn(dev->dev,
++			 "NPU memory initialization interrupted by recovery, waiting\n");
++		err = airoha_npu_wait_recovery(npu);
++		if (err) {
++			dev_err(dev->dev, "NPU recovery failed: %d\n", err);
++			goto error_ppe_put;
++		}
++	} else if (err == -ETIMEDOUT) {
++		dev_warn(dev->dev,
++			 "NPU memory initialization timed out, recovering core 0\n");
++		err = airoha_npu_recover(npu);
++		if (err) {
++			dev_err(dev->dev, "failed to recover NPU core 0: %d\n",
++				err);
++			goto error_ppe_put;
++		}
++	}
++
++	if (retry) {
++		err = airoha_npu_wlan_init_reserved_memory(npu);
++		if (err)
++			dev_err(dev->dev,
++				"NPU memory initialization retry failed: %d\n",
++				err);
++	}
+ 	if (err)
+ 		goto error_ppe_put;
+ 

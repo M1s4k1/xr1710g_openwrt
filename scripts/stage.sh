@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # stage.sh — 合成「生效仓库」到 .stage/
 #
-# 做什么：把 上游(upstream) + 本仓库 local/ 叠加成一个完整的、可被上游
-#         scripts/build.sh 接受的仓库（同构：含 patches/ config/ files/ scripts/）。
+# 做什么：把项目内置 aggregate + 本仓库 local/ 叠加成一个完整的、可被构建脚本
+#         接受的仓库（同构：含 patches/ config/ files/ scripts/）。
 #
 # 流程：
-#   [1] rsync 上游 → .stage/（排除 .git / bin / build-*；含 .git 由 --git 控制）
+#   [1] rsync aggregate → .stage/（排除 .git / bin / build-*；含 .git 由 --git 控制）
 #   [2] merge-manifest.py 应用 local/manifest.rules → .stage/patches/MANIFEST
 #   [3] gen-order.py 重生成 .stage/patches/ORDER   ← ⚠ 必需，否则 audit-order 报红
 #   [4] 叠加本地补丁 local/patches/*.patch → .stage/patches/local/
@@ -14,9 +14,10 @@
 #   [7] DISABLE_OC=1（默认）→ sed 改写 .stage/scripts/build.sh，禁用 CPU 超频
 #
 # 用法：
-#   scripts/stage.sh [--upstream DIR] [--out DIR] [--tier v1-safe|func]
+#   scripts/stage.sh [--upstream DIR|--aggregate-source DIR] [--aggregate-ref REF]
+#                    [--out DIR] [--tier v1-safe|func]
 #                    [--disable-oc 0|1] [--keep-git]
-# 默认：upstream=../xr1710g-openwrt  out=.stage  tier=func  disable-oc=1
+# 默认：aggregate=<项目内置 aggregate>  out=.stage  tier=func  disable-oc=1
 set -euo pipefail
 
 # ⚠ 必须 C locale：上游脚本有 41 处「$VAR 紧跟全角标点」的写法（如 build.sh 的
@@ -27,14 +28,12 @@ export LC_ALL=C
 export LANG=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# 上游位置：自动探测（支持同级或上两级 xr1710g-openwrt），支持 UPSTREAM_DIR 覆盖
+# 来源解析：项目内置 aggregate 是默认输入；UPSTREAM_DIR 是兼容的显式目录入口。
+# shellcheck disable=SC1091
+source "$ROOT/scripts/source-resolver.sh"
 UPSTREAM="${UPSTREAM_DIR:-}"
-if [[ -z "$UPSTREAM" ]]; then
-  for u in "$ROOT/../xr1710g-openwrt" "$ROOT/../../xr1710g-openwrt" "$ROOT/upstream"; do
-    [[ -d "$u" && -f "$u/patches/MANIFEST" ]] && UPSTREAM="$u" && break
-  done
-  UPSTREAM="${UPSTREAM:-$ROOT/../xr1710g-openwrt}"
-fi
+AGGREGATE_SOURCE_ARG=""
+AGGREGATE_REF_ARG=""
 OUT="${STAGE_DIR:-$ROOT/.stage}"
 TIER="func"
 DISABLE_OC="${DISABLE_OC:-1}"
@@ -43,6 +42,8 @@ KEEP_GIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --upstream) UPSTREAM="$2"; shift 2 ;;
+    --aggregate-source) AGGREGATE_SOURCE_ARG="$2"; shift 2 ;;
+    --aggregate-ref) AGGREGATE_REF_ARG="$2"; shift 2 ;;
     --out)      OUT="$2"; shift 2 ;;
     --tier)     TIER="$2"; shift 2 ;;
     --disable-oc) DISABLE_OC="$2"; shift 2 ;;
@@ -58,18 +59,21 @@ case "$TIER" in
   *) echo "错误：--tier ∈ func|v1-safe" >&2; exit 1 ;;
 esac
 
-[[ -d "$UPSTREAM" ]] || { echo "✗ 找不到上游仓库：$UPSTREAM" >&2; exit 1; }
-[[ -f "$UPSTREAM/patches/MANIFEST" ]] || { echo "✗ 上游缺 patches/MANIFEST" >&2; exit 1; }
+source_resolve "$ROOT" "$AGGREGATE_SOURCE_ARG" "$AGGREGATE_REF_ARG" "$UPSTREAM"
+UPSTREAM="$AGGREGATE_DIR_RESOLVED"
+echo "  aggregate source: ${AGGREGATE_SOURCE_RESOLVED:-embedded}"
+echo "  aggregate ref   : $AGGREGATE_REF_RESOLVED"
+[[ -f "$UPSTREAM/patches/MANIFEST" ]] || { echo "✗ aggregate 缺 patches/MANIFEST" >&2; exit 1; }
 [[ -f "$RULES" ]] || { echo "✗ 找不到 rules：$RULES" >&2; exit 1; }
 
-echo "== [1/7] rsync 上游 → $OUT =="
+echo "== [1/7] rsync aggregate → $OUT =="
 EXCLUDES=(--exclude='.git' --exclude='bin' --exclude='build-*.log'
           --exclude='.config' --exclude='.config.old'
           --exclude='tmp' --exclude='staging_dir' --exclude='build_dir')
 [[ "$KEEP_GIT" == "1" ]] && EXCLUDES=(--exclude='bin' --exclude='build-*.log')
 mkdir -p "$OUT"
 rsync -a --delete "${EXCLUDES[@]}" "$UPSTREAM/" "$OUT/"
-echo "  完成（上游 $(git -C "$UPSTREAM" rev-parse --short HEAD 2>/dev/null || echo '?')）"
+echo "  完成（aggregate $AGGREGATE_COMMIT_RESOLVED）"
 
 echo "== [2/7] 应用 rules：$TIER → patches/MANIFEST =="
 python3 "$ROOT/scripts/merge-manifest.py" "$OUT/patches/MANIFEST" \
@@ -127,6 +131,6 @@ fi
 ACTIVE="$(grep -cE '^[a-z]' "$OUT/patches/MANIFEST" 2>/dev/null || echo '?')"
 echo
 echo "STAGED OK: $OUT"
-echo "  upstream : $(git -C "$UPSTREAM" rev-parse --short HEAD 2>/dev/null || echo '?')"
+echo "  aggregate: $AGGREGATE_COMMIT_RESOLVED"
 echo "  tier     : $TIER ($ACTIVE active patches)"
 echo "  build    : $OUT/scripts/build.sh stock \"$OUT\""

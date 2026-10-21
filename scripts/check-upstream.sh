@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# check-upstream.sh — 上游 genshanxinli 更新感知（只读、零副作用）
+# check-upstream.sh — aggregate source 更新感知（fetch 与 baseline 模式会产生明确副作用）
 #
 # 目的：回答两个问题
 #   ④ 上游更新了吗？更新了什么？
 #   ⑤ 这些更新对我（本 fork）意味着什么？逐条该接受还是拒绝？
 #
 # 用法：
-#   scripts/check-upstream.sh                 # fetch + 完整报告
-#   scripts/check-upstream.sh --no-fetch      # 用已有 origin/main 引用，不联网
+#   scripts/check-upstream.sh                 # 检查内置 aggregate 快照（不会联网）
+#   scripts/check-upstream.sh --no-fetch      # 显式外部 aggregate 时只用已有 origin/main
 #   scripts/check-upstream.sh --quiet         # 仅有更新时输出摘要（适合定时任务）
-#   scripts/check-upstream.sh --patch-only    # 只看补丁文件变动（过滤文档/调试脚本杂音）
-#   scripts/check-upstream.sh --baseline      # 记录当前上游 tip 为「已裁决基线」
+#   scripts/check-upstream.sh --patch-only    # 只看补丁文件变动
+#   scripts/check-upstream.sh --baseline      # 记录当前内置快照为基线
+#   scripts/check-upstream.sh --aggregate-source DIR  # 显式检查外部 Git aggregate
 #
 # 退出码：
 #   0 = 无更新，或所有更新均无影响
@@ -18,19 +19,19 @@
 #   2 = 检出**直接影响本 fork** 的变化（撞号 / 改了我停用或提档的补丁）—— 最高优先级
 #
 # 设计原则：
-#   - **只读**：只做 git fetch / diff / show，绝不修改工作区或上游仓库
+#   - **内置快照默认冻结**：默认只读检查，不 fetch、不 clone、不修改 aggregate
+#   - **外部兼容入口**：显式传入 Git aggregate 时才允许 fetch / diff / show
 #   - **可离线**：--no-fetch 时纯本地比对；联网失败降级为告警而非崩溃
-#   - **不猜测**：只呈现事实（增删了什么、碰了哪些行），裁决由人做，记进 upstream-decisions.md
+#   - **不猜测**：只呈现事实，裁决由人做，记进 upstream-decisions.md
+#   - **副作用显式**：外部模式 fetch 会更新远端引用；--baseline 会写仓库根 .upstream-baseline
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/source-resolver.sh"
 UPSTREAM="${UPSTREAM_DIR:-}"
-if [[ -z "$UPSTREAM" ]]; then
-  for u in "$ROOT/../xr1710g-openwrt" "$ROOT/../../xr1710g-openwrt" "$ROOT/upstream"; do
-    [[ -d "$u" && -d "$u/.git" ]] && UPSTREAM="$u" && break
-  done
-  UPSTREAM="${UPSTREAM:-$ROOT/../xr1710g-openwrt}"
-fi
+AGGREGATE_SOURCE_ARG=""
+AGGREGATE_REF_ARG=""
 RULES="$ROOT/local/manifest.rules"
 DECISIONS="$ROOT/upstream-decisions.md"
 # ⚠ 不要放在 .stage/ 下：stage.sh 用 `rsync -a --delete` 重建 .stage/，
@@ -39,18 +40,42 @@ DECISIONS="$ROOT/upstream-decisions.md"
 STAMP="$ROOT/.upstream-baseline"   # 上次裁决过的上游 tip
 
 DO_FETCH=1; QUIET=0; SET_BASELINE=0; PATCH_ONLY=0
-for a in "$@"; do
-  case "$a" in
-    --no-fetch)     DO_FETCH=0 ;;
-    --quiet|-q)     QUIET=1 ;;
-    --baseline)     SET_BASELINE=1 ;;
-    --patch-only|-p) PATCH_ONLY=1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-fetch)     DO_FETCH=0; shift ;;
+    --quiet|-q)     QUIET=1; shift ;;
+    --baseline)     SET_BASELINE=1; shift ;;
+    --patch-only|-p) PATCH_ONLY=1; shift ;;
+    --aggregate-source)
+      [[ $# -ge 2 ]] || { echo "缺少 --aggregate-source 参数" >&2; exit 1; }
+      AGGREGATE_SOURCE_ARG="$2"; shift 2 ;;
+    --aggregate-ref)
+      [[ $# -ge 2 ]] || { echo "缺少 --aggregate-ref 参数" >&2; exit 1; }
+      AGGREGATE_REF_ARG="$2"; shift 2 ;;
     -h|--help)      sed -n '2,20p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $a" >&2; exit 1 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
-[[ -d "$UPSTREAM/.git" ]] || { echo "错误：上游仓库不存在：$UPSTREAM" >&2; exit 1; }
+source_resolve "$ROOT" "$AGGREGATE_SOURCE_ARG" "$AGGREGATE_REF_ARG" "$UPSTREAM"
+UPSTREAM="$AGGREGATE_DIR_RESOLVED"
+
+# 内置 aggregate 是随本项目发布的冻结文件快照，不具备 origin/main，也不自动联网更新。
+# 只有显式传入外部目录时，才保留下面的 Git 对账流程。
+if [[ "$AGGREGATE_SOURCE_RESOLVED" == "embedded" && "$UPSTREAM" == "$ROOT/aggregate" ]]; then
+  echo "== aggregate 快照检查 =="
+  echo "   来源   : 项目内置 aggregate/"
+  echo "   快照   : ${AGGREGATE_COMMIT_RESOLVED:0:12}"
+  echo "   状态   : 已冻结；不会 fetch、clone 或自动更新"
+  if [[ "$SET_BASELINE" == 1 ]]; then
+    printf '%s\n' "$AGGREGATE_COMMIT_RESOLVED" > "$STAMP"
+    echo "已记录内置 aggregate 快照基线：${AGGREGATE_COMMIT_RESOLVED:0:12}"
+    echo " - 写入 $STAMP"
+  fi
+  exit 0
+fi
+
+[[ -d "$UPSTREAM/.git" ]] || { echo "错误：显式 aggregate 目录不是 git 仓库：$UPSTREAM" >&2; exit 1; }
 cd "$UPSTREAM"
 
 # ── 0. fetch ────────────────────────────────────────────────────────────

@@ -1,0 +1,143 @@
+# Source: 本仓（F172；2026-09-16 P19 立；slot_reset fail-fast = P22/a，2026-09-16 P23 实施）—— 实机取证/根因/纪律见 docs/FIXES.md F170/F172/F173
+# Upstream: open（mt7921/pci.c 有现成 pci_error_handlers 模板；pin be5ce791 的 mt7996 无，pin bump 时复查可否删）
+# Reason: 实机 MT7996（0000:01:00.0）在 PCIe 事务层报 [14] CmpltTO（Uncorrectable **Non-Fatal**）时，
+#   内核 AER 核在 mt7996e 上找不到 error_detected 回调 ⇒ 打印 `AER: can't recover (no error_detected
+#   callback)`、恢复被放弃（设备仍在 /sys/bus/pci/devices、无 Root Port link reset），随后
+#   firmware/NPU 全部超时、`chip full reset failed`、Wi-Fi 死到必须 reboot（F170 实机否证 A 后的真根因）。
+#   修法（用户裁定「选 2 真修」）：
+#   ① error_detected：pci_channel_io_perm_failure ⇒ DISCONNECT；其余（含 Non-Fatal CmpltTO 的
+#      pci_channel_io_normal）⇒ PCI_ERS_RESULT_NEED_RESET，让 PCI 核走 aer_root_reset() 的
+#      secondary bus reset。**不照抄 mt7921**（它对任何非 0 uncorrectable 一律 DISCONNECT，正好
+#      命中我们的 0x4000，等于摘设备不恢复）。
+#   ② slot_reset：pci_enable_device_mem + pci_set_master + pci_restore_state/pci_save_state 之后
+#      **fail fast**——MCU 在 PCIe 平台是硬死：`0,8` ⇒ WDT ⇒ MCU 死 ⇒ completions 停（CmpltTO 是
+#      下游表征），内核侧 10 次 full reset 每次都重打 WFSYS poke + 重下固件，第一条 MCU 命令
+#      `Message 00000010`（MCU_CMD_PATCH_SEM_CONTROL）就全超时，~54 s 后 `chip full reset failed`
+#      （A/teardown stop、B/无 stop、stock 三版同灭 = F170 三证）；PCI remove+rescan 能重下固件
+#      复活 MCU，但 beacon/TX 引擎不起来（P22/b-redo，F170/F173）⇒ 唯一完整恢复 = 冷 boot。
+#      因此不再排 reset_work（P19 原版照排，ci-173/ci-174 实测必败 + ieee80211 WARNING 风暴），
+#      改为 10 s 后 kernel_restart() 受控重启（堆上 delayed_work；kzalloc 失败降级为打印「手动重启」）。
+#   不改 047（F170-A 的非 recover teardown 仍在 full-reset 路径里），本补丁只补 PCIe 层回调 + 受控重启。
+# 排序：本补丁排在 mt76-0153 / mt76-0160（同文件 mt7996/pci.c）之前；三补丁按 glob 序逐条干净。
+# 实证（本地，可复跑 `python3 tmp/p22/a-edit.py`）：对 mt76 pin 真源 be5ce791 `patch -p1 --fuzz=0` rc=0，
+#   round-trip 逐字节等于构造文件（3 hunk / +84 行 = +1 `include <linux/reboot.h>`、+82 回调块含 worker
+#   与受控重启、+1 `.err_handler`）；随后在完整 mt76 树上
+#   0153（pci.c 两 hunk offset +83）、0160（pci.c 三 hunk offset +83/+84）全部 rc=0 且 **fuzz=0**（只行偏移）。
+#   注：P22 落盘的 a-edit.py 有两处缺陷（单行字符串 \n 转义丢失 ⇒ SyntaxError，从未跑过；验证 2 在只含
+#   mt7996/pci.c 的目录里跑多文件补丁 0153）已由 P23 修好，结论以本行复跑为准。
+# 实机判据（P23/a，见 docs/FIXES.md F173）：单次 `echo '0,8'` ⇒ 未过滤 dmesg（坑 39 口径）=
+#   `[14] CmpltTO` → `Root Port link has been reset` + `device recovery successful` →
+#   `MT7996 MCU unrecoverable via in-driver reset; controlled reboot in 10s` → ≤15 s 受控 kernel_restart；
+#   **无** `Message 00000010` ×10、**无** `chip full reset failed`、**无** ieee80211 WARNING 风暴；
+#   boot 后三频空口验证（坑 58：主机侧 AP-ENABLED/ubus ENABLED 不算数，必须 monitor 抓 beacon 或客户端实连）。
+#   ⚠ 该实验会让 Wi-Fi 断约 90 s。
+
+diff --git a/mt7996/pci.c b/mt7996/pci.c
+index b7d9193e..26f4913e 100644
+--- a/mt7996/pci.c
++++ b/mt7996/pci.c
+@@ -6,6 +6,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/pci.h>
++#include <linux/reboot.h>
+ 
+ #include "mt7996.h"
+ #include "mac.h"
+@@ -29,6 +30,88 @@
+ 	{ },
+ };
+ 
++static pci_ers_result_t mt7996_error_detected(struct pci_dev *pdev,
++					      pci_channel_state_t state)
++{
++	struct mt76_dev *mdev = pci_get_drvdata(pdev);
++	u32 aer_unc = 0, aer_co = 0;
++
++	dev_err(mdev->dev, "PCIE error detected, state: %d\n", state);
++
++	/* Stop the IRQ tasklet from touching the device during recovery. */
++	tasklet_kill(&mdev->irq_tasklet);
++
++	if (state == pci_channel_io_perm_failure)
++		return PCI_ERS_RESULT_DISCONNECT;
++
++	pci_read_config_dword(pdev, PCIE_AER_UNC_STATUS_OFFSET, &aer_unc);
++	pci_read_config_dword(pdev, PCIE_AER_CO_STATUS_OFFSET, &aer_co);
++	dev_warn(mdev->dev, "AER uncorrectable 0x%08x, correctable 0x%08x\n",
++		 aer_unc, aer_co);
++
++	/* A CmpltTO is an uncorrectable but non-fatal error, which the core
++	 * delivers as pci_channel_io_normal.  The endpoint stays on the bus and
++	 * only the on-chip firmware state is lost, so ask for a slot reset
++	 * rather than disconnecting; the slot reset schedules a controlled
++	 * reboot because the MCU does not recover in driver (F170/P22-a).
++	 */
++	return PCI_ERS_RESULT_NEED_RESET;
++}
++
++static void mt7996_fw_reboot(struct work_struct *ws)
++{
++	pr_crit("mt7996: controlled reboot after unrecoverable MCU fw crash (PCIe CmpltTO, F170/P22-a)\n");
++	kernel_restart("mt7996: unrecoverable MCU fw (PCIe CmpltTO)");
++}
++
++static pci_ers_result_t mt7996_slot_reset(struct pci_dev *pdev)
++{
++	struct mt76_dev *mdev = pci_get_drvdata(pdev);
++	struct mt7996_dev *dev = container_of(mdev, struct mt7996_dev, mt76);
++	int ret;
++
++	ret = pci_enable_device_mem(pdev);
++	if (ret) {
++		dev_err(mdev->dev, "pci_enable_device_mem failed: %d\n", ret);
++		return PCI_ERS_RESULT_DISCONNECT;
++	}
++
++	pci_set_master(pdev);
++	pci_restore_state(pdev);
++	pci_save_state(pdev);
++
++	/* Bus-level recovery is done here; the firmware is not.  On this
++	 * platform a [14] CmpltTO means the MCU is gone: the in-driver full
++	 * reset re-runs the WFSYS poke and re-downloads the firmware ten
++	 * times over ~54s and always ends in "chip full reset failed"
++	 * (A/B/stock, F170), and even a PCI remove+rescan that revives the
++	 * MCU leaves the beacon/TX engine un-armed (P22/b-redo).  Only a
++	 * cold boot restores service, so fail fast and schedule a
++	 * controlled reboot instead of a doomed 54s reset storm.
++	 */
++	if (dev->recovery.hw_init_done) {
++		struct delayed_work *reboot;
++
++		dev_crit(mdev->dev,
++			 "MT7996 MCU unrecoverable via in-driver reset; controlled reboot in 10s\n");
++		reboot = kzalloc(sizeof(*reboot), GFP_KERNEL);
++		if (reboot) {
++			INIT_DELAYED_WORK(reboot, mt7996_fw_reboot);
++			schedule_delayed_work(reboot, 10 * HZ);
++		} else {
++			dev_err(mdev->dev,
++				"no memory for reboot work; reboot manually\n");
++		}
++	}
++
++	return PCI_ERS_RESULT_RECOVERED;
++}
++
++static const struct pci_error_handlers mt7996_err_handler = {
++	.error_detected = mt7996_error_detected,
++	.slot_reset	= mt7996_slot_reset,
++};
++
+ static struct mt7996_hif *mt7996_pci_get_hif2(u32 idx)
+ {
+ 	struct mt7996_hif *hif;
+@@ -250,6 +333,7 @@
+ 
+ struct pci_driver mt7996_pci_driver = {
+ 	.name		= KBUILD_MODNAME,
++	.err_handler	= &mt7996_err_handler,
+ 	.id_table	= mt7996_pci_device_table,
+ 	.probe		= mt7996_pci_probe,
+ 	.remove		= mt7996_pci_remove,

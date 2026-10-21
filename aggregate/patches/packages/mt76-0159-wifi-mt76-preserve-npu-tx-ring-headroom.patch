@@ -1,0 +1,80 @@
+# Source: YYH2913/openwrt mt76/0159（Yanghan Ye, 2026-08-07）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a
+# Reason: 对齐 Airoha SDK 的 TX 提交规则——保留 5 个描述符的 prefetch 余量 + 提交前确认描述符
+#   host-owned，防止覆盖 firmware 仍在读的活跃描述符。修法：MT76_NPU_TX_RESERVED_DESC=5；
+#   mt76_npu_tx_queue_available()（ndesc<=5 或 queued>=ndesc-5 → false；否则看 desc[head].ctrl
+#   的 DONE 位）；mt76_dma_tx_queue_skb() 在 RESET 判定后加门。
+# **stub 配对已核对（F126）**：非 NPU 构建下 mt76_npu_tx_queue_available() stub 返回 false，
+#   但 mt76_queue_is_npu_tx() 为 `q->flags & MT_QFLAG_NPU`，而该 flag 仅由
+#   mt7996_init_tx_queues() 在 `mt76_npu_device_active()` 为真时设置（npu.c/mt7996-dma.c）——
+#   即 flag 为真 ⇒ NPU 代码已编译且活跃 ⇒ 走到的是真实实现；非 NPU 构建 flag 恒为 0，
+#   短路后 stub 不会被求值。**不存在"非 NPU 构建全丢包"路径**。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序按序 fuzz=0。
+diff --git a/dma.c b/dma.c
+index a5c5b23a..22f71187 100644
+--- a/dma.c
++++ b/dma.c
+@@ -685,6 +685,9 @@ mt76_dma_tx_queue_skb(struct mt76_phy *phy, struct mt76_queue *q,
+ 	if (test_bit(MT76_RESET, &phy->state))
+ 		goto free_skb;
+ 
++	if (mt76_queue_is_npu_tx(q) && !mt76_npu_tx_queue_available(q))
++		goto free_skb;
++
+ 	/* TODO: Take into account unlinear skbs */
+ 	if (mt76_npu_device_active(dev) && skb_linearize(skb))
+ 		goto free_skb;
+diff --git a/mt76.h b/mt76.h
+index 184c5508..b4f22560 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -1681,6 +1681,7 @@ void mt76_npu_check_ppe(struct mt76_dev *dev, struct sk_buff *skb,
+ int mt76_npu_dma_add_buf(struct mt76_phy *phy, struct mt76_queue *q,
+ 			 struct sk_buff *skb, struct mt76_queue_buf *buf,
+ 			 void *txwi_ptr);
++bool mt76_npu_tx_queue_available(struct mt76_queue *q);
+ int mt76_npu_rx_queue_init(struct mt76_dev *dev, struct mt76_queue *q);
+ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev);
+ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q);
+@@ -1712,6 +1713,11 @@ static inline int mt76_npu_dma_add_buf(struct mt76_phy *phy,
+ 	return -EOPNOTSUPP;
+ }
+ 
++static inline bool mt76_npu_tx_queue_available(struct mt76_queue *q)
++{
++	return false;
++}
++
+ static inline int mt76_npu_fill_rx_queue(struct mt76_dev *dev,
+ 					 struct mt76_queue *q)
+ {
+diff --git a/npu.c b/npu.c
+index 420f3752..d3b1082c 100644
+--- a/npu.c
++++ b/npu.c
+@@ -13,6 +13,7 @@
+ 
+ #define MT76_NPU_RX_BUF_SIZE	(1800 + \
+ 				 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
++#define MT76_NPU_TX_RESERVED_DESC	5
+ 
+ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
+ {
+@@ -242,6 +243,17 @@ out:
+ 	return IRQ_HANDLED;
+ }
+ 
++bool mt76_npu_tx_queue_available(struct mt76_queue *q)
++{
++	struct airoha_npu_tx_dma_desc *desc = (void *)q->desc;
++
++	if (q->ndesc <= MT76_NPU_TX_RESERVED_DESC ||
++	    q->queued >= q->ndesc - MT76_NPU_TX_RESERVED_DESC)
++		return false;
++
++	return !(READ_ONCE(desc[q->head].ctrl) & NPU_TX_DMA_DESC_DONE_MASK);
++}
++
+ int mt76_npu_dma_add_buf(struct mt76_phy *phy, struct mt76_queue *q,
+ 			 struct sk_buff *skb, struct mt76_queue_buf *buf,
+ 			 void *txwi_ptr)

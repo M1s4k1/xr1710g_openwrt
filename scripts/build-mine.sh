@@ -9,8 +9,8 @@
 #                         [--stage-only] [--dry-run] [--disable-oc 0|1]
 #
 # 档位说明：
-#   stock        = 正式 func 选择集（103 条活动：上游提档 40 + 本地 9501/9601/9602）
-#   v1-safe      = 保守档（63 条活动：上游 default 原样 + 本地 9501/9601/9602，不提档）
+#   stock        = 正式 func 选择集（104 条活动：上游提档 40 + 本地 9501/9601/9602/9603）
+#   v1-safe      = 保守档（64 条活动：上游 default 原样 + 本地 9501/9601/9602/9603，不提档）
 #                  ——**建议首次刷机用这个**
 #   experimental = 上游实验档语义（本仓库提档后 experimental 为空 ⇒ 等价 stock）
 #
@@ -31,18 +31,24 @@ export LC_ALL=C
 export LANG=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/source-resolver.sh"
 TIER_ARG="stock"
 JOBS="${JOBS:-}"
 STAGE_ONLY=0
 DRY_RUN=0
 DISABLE_OC="${DISABLE_OC:-1}"
-TREE="${OPENWRT_DIR:-}"
+TREE="${OPENWRT_DIR:-${TREE:-}}"
+AGGREGATE_SOURCE_ARG=""
+AGGREGATE_REF_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     stock|experimental|v1-safe) TIER_ARG="$1"; shift ;;
     --jobs) JOBS="$2"; shift 2 ;;
     --tree) TREE="$2"; shift 2 ;;
+    --aggregate-source) AGGREGATE_SOURCE_ARG="$2"; shift 2 ;;
+    --aggregate-ref) AGGREGATE_REF_ARG="$2"; shift 2 ;;
     --stage-only) STAGE_ONLY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --disable-oc) DISABLE_OC="$2"; shift 2 ;;
@@ -63,14 +69,20 @@ echo "# build-mine  stage=$STAGE_TIER  upstream=$UP_TIER  OC=$( [[ $DISABLE_OC =
 echo "########################################################"
 
 echo
-echo ">>> [1/3] stage"
-"$ROOT/scripts/stage.sh" --tier "$STAGE_TIER" --disable-oc "$DISABLE_OC"
+ echo ">>> [1/3] stage"
+STAGE_ARGS=(--tier "$STAGE_TIER" --disable-oc "$DISABLE_OC")
+[[ -n "$AGGREGATE_SOURCE_ARG" ]] && STAGE_ARGS+=(--aggregate-source "$AGGREGATE_SOURCE_ARG")
+[[ -n "$AGGREGATE_REF_ARG" ]] && STAGE_ARGS+=(--aggregate-ref "$AGGREGATE_REF_ARG")
+"$ROOT/scripts/stage.sh" "${STAGE_ARGS[@]}"
 
 [[ "$STAGE_ONLY" == "1" ]] && { echo "  --stage-only 模式，停止。"; exit 0; }
 
 echo
-echo ">>> [2/3] rules 审计"
-"$ROOT/scripts/audit-local.sh" || exit 1
+ echo ">>> [2/3] rules 审计"
+AUDIT_ARGS=()
+[[ -n "$AGGREGATE_SOURCE_ARG" ]] && AUDIT_ARGS+=(--aggregate-source "$AGGREGATE_SOURCE_ARG")
+[[ -n "$AGGREGATE_REF_ARG" ]] && AUDIT_ARGS+=(--aggregate-ref "$AGGREGATE_REF_ARG")
+"$ROOT/scripts/audit-local.sh" "${AUDIT_ARGS[@]}" || exit 1
 
 echo
 echo ">>> [3/3] 构建 - 上游 build.sh $UP_TIER"

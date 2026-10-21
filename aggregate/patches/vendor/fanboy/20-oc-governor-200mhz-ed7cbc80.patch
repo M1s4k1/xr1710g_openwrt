@@ -1,0 +1,152 @@
+From ed7cbc80bc2e65bcae2eef1b5288b67cc1c5b00a Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Sat, 14 Feb 2026 08:18:50 -1000
+Subject: [PATCH] switch to performance governor and overclock +200mhz
+
+---
+ target/linux/airoha/an7581/config-6.18        |  4 +-
+ target/linux/airoha/dts/an7581.dtsi           | 60 +++++++++----------
+ ...oha-Add-Airoha-CPU-PM-Domain-support.patch |  2 +-
+ 3 files changed, 33 insertions(+), 33 deletions(-)
+
+diff --git a/target/linux/airoha/an7581/config-6.18 b/target/linux/airoha/an7581/config-6.18
+index 35399c2a8425c2..cb583ab609c6a2 100644
+--- a/target/linux/airoha/an7581/config-6.18
++++ b/target/linux/airoha/an7581/config-6.18
+@@ -62,8 +62,8 @@ CONFIG_CONTEXT_TRACKING_IDLE=y
+ CONFIG_CPUFREQ_DT=y
+ CONFIG_CPUFREQ_DT_PLATDEV=y
+ CONFIG_CPU_FREQ=y
+-CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y
+-# CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE is not set
++# CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND is not set
++CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y
+ CONFIG_CPU_FREQ_GOV_ATTR_SET=y
+ CONFIG_CPU_FREQ_GOV_COMMON=y
+ CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+diff --git a/target/linux/airoha/dts/an7581.dtsi b/target/linux/airoha/dts/an7581.dtsi
+index f9c1abea514786..de8abe66fa181e 100644
+--- a/target/linux/airoha/dts/an7581.dtsi
++++ b/target/linux/airoha/dts/an7581.dtsi
+@@ -158,78 +158,78 @@
+ 		compatible = "operating-points-v2";
+ 		opp-shared;
+ 
+-		opp-500000000 {
+-			opp-hz = /bits/ 64 <500000000>;
+-			required-opps = <&smcc_opp0>;
+-		};
+-
+-		opp-550000000 {
+-			opp-hz = /bits/ 64 <550000000>;
+-			required-opps = <&smcc_opp1>;
+-		};
+-
+-		opp-600000000 {
+-			opp-hz = /bits/ 64 <600000000>;
+-			required-opps = <&smcc_opp2>;
+-		};
+-
+-		opp-650000000 {
+-			opp-hz = /bits/ 64 <650000000>;
+-			required-opps = <&smcc_opp3>;
+-		};
+-
+ 		opp-700000000 {
+ 			opp-hz = /bits/ 64 <700000000>;
+-			required-opps = <&smcc_opp4>;
++			required-opps = <&smcc_opp0>;
+ 		};
+ 
+ 		opp-750000000 {
+ 			opp-hz = /bits/ 64 <750000000>;
+-			required-opps = <&smcc_opp5>;
++			required-opps = <&smcc_opp1>;
+ 		};
+ 
+ 		opp-800000000 {
+ 			opp-hz = /bits/ 64 <800000000>;
+-			required-opps = <&smcc_opp6>;
++			required-opps = <&smcc_opp2>;
+ 		};
+ 
+ 		opp-850000000 {
+ 			opp-hz = /bits/ 64 <850000000>;
+-			required-opps = <&smcc_opp7>;
++			required-opps = <&smcc_opp3>;
+ 		};
+ 
+ 		opp-900000000 {
+ 			opp-hz = /bits/ 64 <900000000>;
+-			required-opps = <&smcc_opp8>;
++			required-opps = <&smcc_opp4>;
+ 		};
+ 
+ 		opp-950000000 {
+ 			opp-hz = /bits/ 64 <950000000>;
+-			required-opps = <&smcc_opp9>;
++			required-opps = <&smcc_opp5>;
+ 		};
+ 
+ 		opp-1000000000 {
+ 			opp-hz = /bits/ 64 <1000000000>;
+-			required-opps = <&smcc_opp10>;
++			required-opps = <&smcc_opp6>;
+ 		};
+ 
+ 		opp-1050000000 {
+ 			opp-hz = /bits/ 64 <1050000000>;
+-			required-opps = <&smcc_opp11>;
++			required-opps = <&smcc_opp7>;
+ 		};
+ 
+ 		opp-1100000000 {
+ 			opp-hz = /bits/ 64 <1100000000>;
+-			required-opps = <&smcc_opp12>;
++			required-opps = <&smcc_opp8>;
+ 		};
+ 
+ 		opp-1150000000 {
+ 			opp-hz = /bits/ 64 <1150000000>;
+-			required-opps = <&smcc_opp13>;
++			required-opps = <&smcc_opp9>;
+ 		};
+ 
+ 		opp-1200000000 {
+ 			opp-hz = /bits/ 64 <1200000000>;
++			required-opps = <&smcc_opp10>;
++		};
++
++		opp-1250000000 {
++			opp-hz = /bits/ 64 <1250000000>;
++			required-opps = <&smcc_opp11>;
++		};
++
++		opp-1300000000 {
++			opp-hz = /bits/ 64 <1300000000>;
++			required-opps = <&smcc_opp12>;
++		};
++
++		opp-1350000000 {
++			opp-hz = /bits/ 64 <1350000000>;
++			required-opps = <&smcc_opp13>;
++		};
++
++		opp-1400000000 {
++			opp-hz = /bits/ 64 <1400000000>;
+ 			required-opps = <&smcc_opp14>;
+ 		};
+ 	};
+diff --git a/target/linux/airoha/patches-6.18/940-pmdomain-airoha-Add-Airoha-CPU-PM-Domain-support.patch b/target/linux/airoha/patches-6.18/940-pmdomain-airoha-Add-Airoha-CPU-PM-Domain-support.patch
+index 357ad31587866b..a24f98230bf591 100644
+--- a/target/linux/airoha/patches-6.18/940-pmdomain-airoha-Add-Airoha-CPU-PM-Domain-support.patch
++++ b/target/linux/airoha/patches-6.18/940-pmdomain-airoha-Add-Airoha-CPU-PM-Domain-support.patch
+@@ -211,7 +211,7 @@ Signed-off-by: Ulf Hansson <ulf.hansson@linaro.org>
+ +				   unsigned int state)
+ +{
+ +	void __iomem *base = priv->pll_base;
+-+	unsigned int freq_mhz = 500 + state * 50;
+++	unsigned int freq_mhz = 700 + state * 50;
+ +	unsigned int posdiv, pcw_int;
+ +	unsigned long flags;
+ +	u32 val, old_chg, cleared;

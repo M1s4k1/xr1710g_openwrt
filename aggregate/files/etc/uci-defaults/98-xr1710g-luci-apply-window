@@ -1,0 +1,31 @@
+#!/bin/sh
+# XR1710G: 把 LuCI 的 apply 确认回滚窗口从出厂 90s 放宽到 300s（2026-09-12 P2 吸收，F118）。
+#
+# 背景：把 5GHz 切到跨 DFS 的宽度（例如 ch36/HE160）需要 ~60s CAC 之后 AP 才回来；
+#   在无线管理会话下 90s 窗口先到期 → LuCI 自动回滚，用户看到"160 被改回 80"。
+#   本仓默认 5G=ch149/HE80（非 DFS）不受影响，但无线配置里注释化的 ch36/HE160 DFS 档
+#   一旦启用就命中同一条链（files/etc/config/wireless 已文档化该档位）。
+#
+# 口径（与 orangeyoo 移植版的差异）：
+#   - 仅当 luci.apply.rollback 为**出厂默认 90 或缺省**时改为 300；
+#     用户显式设过的值（例如 600）一律保留。
+#   - 节不存在时补建 luci.apply=internal。
+#   - 板型判断用本仓 DTS 的 compatible：gemtek,xr1710g-ubi（orangeyoo 用 econet,xr1710g-ubi）。
+#   - 幂等：写成 300 之后重跑不再写、不再 commit。
+
+board="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ -n "$board" ] || board="$(board_name 2>/dev/null)"
+[ "$board" = 'gemtek,xr1710g-ubi' ] || exit 0
+
+cur="$(uci -q get luci.apply.rollback 2>/dev/null || true)"
+case "$cur" in
+	''|'90') ;;
+	*) exit 0 ;;
+esac
+
+if ! uci -q get luci.apply >/dev/null 2>&1; then
+	uci -q set luci.apply=internal || exit 1
+fi
+uci -q set luci.apply.rollback='300' || exit 1
+uci -q commit luci || exit 1
+exit 0

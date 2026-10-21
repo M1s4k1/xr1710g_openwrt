@@ -1,0 +1,19 @@
+# Source: YYH2913/openwrt mt76/0021（MTK）—— 2026-09-12 P3-C 吸收，#EXP
+# Upstream: n/a（MTK 内部树；be5ce791 仍是 `!wcid->sta` 形态）
+# Reason: mt7996_rx_get_wcid() 的 `if (!wcid || !wcid->sta) return NULL;` 在 STA 用 vif wcid
+#   发 null func 后取 TxS 时无法正确取回 wcid（影响 beacon loss 判定）。改为
+#   `if (!wcid || wcid == &dev->mt76.global_wcid) return NULL;`（1 行）。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序 fuzz=0。
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index a8eaee16..fa8c8c68 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -23,7 +23,7 @@ static struct mt76_wcid *mt7996_rx_get_wcid(struct mt7996_dev *dev,
+ 	int i;
+ 
+ 	wcid = mt76_wcid_ptr(dev, idx);
+-	if (!wcid || !wcid->sta)
++	if (!wcid || wcid == &dev->mt76.global_wcid)
+ 		return NULL;
+ 
+ 	if (!mt7996_band_valid(dev, band_idx))

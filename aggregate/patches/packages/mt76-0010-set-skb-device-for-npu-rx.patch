@@ -1,0 +1,39 @@
+# Source: orangeyoo/XR1710G-OpenWrt-iStoreOS-Community patches/mt76/0103 (2026-08-23 fetched; original from naoki66)
+# Upstream: n/a (community fix; evaluate against openwrt/mt76 master for upstreaming)
+# Reason: NPU RX path must set skb->dev for PPE-miss bridge/FDB fallback; see FIXES.md A6
+# Note: uses mt76_queue_is_npu_rx(q) rather than hardcoding MT_RXQ_NPU0 so all NPU RX queues are covered.
+From: naoki66 <naoki66@qq.com>
+Date: Sat, 15 Aug 2026 09:12:20 +0800
+Subject: [PATCH] wifi: mt76: mt7996: set skb device for NPU RX
+
+Unlike the WED RX path, the Airoha NPU RX path does not set skb->dev
+before passing a header-translated frame to mt76_npu_check_ppe(). On a
+PPE cache miss, the bridge fallback needs the ingress netdev to resolve
+the bridge and FDB path. Set it from the station VIF for NPU RX queues.
+
+This is a narrow backport of the XR1710G-relevant fix from naoki66's
+latest MT7996 patch series. It does not change WED PPE handling.
+
+Signed-off-by: naoki66 <naoki66@qq.com>
+---
+ mt7996/mac.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -681,6 +681,14 @@ mt7996_mac_fill_rx(struct mt7996_dev *dev, enum mt76_rxq_id q,
+ 		status->flag |= RX_FLAG_8023;
+ 		mt7996_wed_check_ppe(dev, &dev->mt76.q_rx[q], msta, skb,
+ 				     *info);
++		if (msta && msta->vif &&
++		    mt76_queue_is_npu_rx(&dev->mt76.q_rx[q])) {
++			struct ieee80211_vif *vif;
++
++			vif = container_of((void *)msta->vif,
++					   struct ieee80211_vif, drv_priv);
++			skb->dev = ieee80211_vif_to_wdev(vif)->netdev;
++		}
+ 		mt76_npu_check_ppe(&dev->mt76, skb, *info);
+ 	}
+ 

@@ -1,0 +1,528 @@
+# Source: YYH2913/openwrt@xr1710g-6.18-integration（Yanghan Ye）target/linux/airoha/patches-6.18/923..928
+# Upstream: n/a（作者自持；同族 924-use-coherent-mailbox-dma 上游 openwrt main 已收录 → 不重复携带，见 F124）
+# Reason: NPU mailbox 可靠性闭环（六项内层 9999-30..35）：
+#   30 recover stalled firmware cores（watchdog 后同步恢复 core 0，暴露 airoha_npu_recover()）
+#   31 fix watchdog work lifetime（devm cancel action + airoha_npu_wait_recovery()/recovery_err）
+#   32 close recovery synchronization race（atomic recovering + 排空各 core 锁）
+#   33 fix offload provider device link lifetime（DL_FLAG_AUTOREMOVE_CONSUMER）
+#   34 acknowledge only the requested WLAN RX IRQ（一个 ring 不再清另一个 ring 的 pending）
+#   35 publish mailbox command before doorbell（先写 CTRL3 再自增 CTRL2；修 probe 固件版本 0.0）
+#   **本补丁是 P3-B（mt76 NPU 生命周期 0147/0155）的硬前置**——后者的 retry 依赖
+#   airoha_npu_recover() 与 airoha_npu_wait_recovery()。
+# 档位 #EXP。实机判据：probe 时 WLAN_FUNC_GET_WAIT_NPU_VERSION == 0.1111；watchdog 触发后
+#   无需重启即可恢复；NPU offload 绑定成功。
+# 实证：linux 6.18.44 真源 + 本仓 airoha 内层全序（含 9990/9995/9996/9997/9998）之上，
+#   6 个内层按序 `patch -p1 --fuzz=0` 全部成功；重基说明见各内层顶部 `# Reason:`。
+diff --git a/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch b/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch
+new file mode 100644
+index 0000000..2362f07
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch
+@@ -0,0 +1,187 @@
++# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/airoha/patches-6.18/923-net-airoha-npu-recover-stalled-cores.patch
++#   （Yanghan Ye, 2026-08-06, d6b07d31）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持，未见 PR）
++# Reason: NPU watchdog 只抓 coredump 不重启停滞的 firmware core；mailbox 用户只能等满超时，
++#   无线卸载不重启整机无法恢复。本补丁从 Airoha vendor SDK（private/npu/host/npu_rv32.c）
++#   移植恢复序列：保留 enabled-core mask、对受影响 core 置 reboot 位、间隔 100ms 触发两次
++#   清总线残留、重启 core 0 前把 MIB0 置全 1 以保留 BSS/PLIC/timer 状态。并暴露同步的
++#   airoha_npu_recover()（core 0）供 NPU 消费者使用；recovery 期间 mailbox 请求返回 -EAGAIN。
++# 重基：本仓真源已含上游 924-use-coherent（__airoha_npu_send_msg + per-core coherent buf），
++#   故 send_msg 两个 hunk 由旧 dma_map_single 上下文重锚到 __airoha_npu_send_msg
++#   （guard 紧跟 spin_lock_bh(&core->lock)，unlock: 标签在 spin_unlock_bh 之前）。
++# 位置：ROOT 包裹补丁内层，序号 9999-30（排在 SOE 9999-1x/2x 之后 → 内核应用顺序最后）。
++# 实证：对 linux 6.18.44 真源（kernel-base）按序应用 fuzz=0。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index 51eebdf..5ad6389 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -189,6 +189,10 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
++ 	 * foe_commit under atomic context).
++ 	 */
++ 	spin_lock_bh(&core->lock);
+++	if (npu->recovering) {
+++		ret = -EAGAIN;
+++		goto unlock;
+++	}
++ 
++ 	memcpy(core->buf, data, len);
++ 
++@@ -210,6 +214,7 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
++ 	if (!ret && reply)
++ 		memcpy(reply, core->buf + len - reply_len, reply_len);
++ 
+++unlock:
++ 	spin_unlock_bh(&core->lock);
++ 
++ 	return ret;
++@@ -317,6 +322,54 @@ static irqreturn_t airoha_npu_mbox_handler(int irq, void *npu_instance)
++ 	return IRQ_HANDLED;
++ }
++ 
+++static int airoha_npu_restart_core(struct airoha_npu *npu, int core)
+++{
+++	int i, err = 0;
+++	u32 val;
+++
+++	if (core < 0 || core >= ARRAY_SIZE(npu->cores))
+++		return -EINVAL;
+++
+++	mutex_lock(&npu->recovery_lock);
+++
+++	spin_lock_bh(&npu->cores[0].lock);
+++	npu->recovering = true;
+++	err = regmap_read(npu->regmap, REG_CR_BOOT_CONFIG, &val);
+++	spin_unlock_bh(&npu->cores[0].lock);
+++	if (err)
+++		goto out;
+++
+++	val = (val & GENMASK(7, 0)) | BIT(8 + core);
+++	for (i = 0; i < 2; i++) {
+++		spin_lock_bh(&npu->cores[0].lock);
+++		err = regmap_write(npu->regmap, REG_CR_BOOT_CONFIG, val);
+++		if (!err && !core)
+++			err = regmap_write(npu->regmap, REG_CR_NPU_MIB(0),
+++					   U32_MAX);
+++		if (!err)
+++			err = regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER, 2);
+++		spin_unlock_bh(&npu->cores[0].lock);
+++		if (err)
+++			break;
+++
+++		msleep(100);
+++	}
+++
+++out:
+++	spin_lock_bh(&npu->cores[0].lock);
+++	npu->recovering = false;
+++	spin_unlock_bh(&npu->cores[0].lock);
+++	mutex_unlock(&npu->recovery_lock);
+++
+++	return err;
+++}
+++
+++int airoha_npu_recover(struct airoha_npu *npu)
+++{
+++	return airoha_npu_restart_core(npu, 0);
+++}
+++EXPORT_SYMBOL_GPL(airoha_npu_recover);
+++
++ static void airoha_npu_wdt_work(struct work_struct *work)
++ {
++ 	struct airoha_npu_core *core;
++@@ -328,16 +381,20 @@ static void airoha_npu_wdt_work(struct work_struct *work)
++ 	core = container_of(work, struct airoha_npu_core, wdt_work);
++ 	npu = core->npu;
++ 
++-	dump = vzalloc(NPU_DUMP_SIZE);
++-	if (!dump)
++-		return;
++-
++ 	c = core - &npu->cores[0];
++-	regmap_bulk_read(npu->regmap, REG_PC_DBG(c), val, ARRAY_SIZE(val));
++-	snprintf(dump, NPU_DUMP_SIZE, "PC: %08x SP: %08x LR: %08x\n",
++-		 val[0], val[1], val[2]);
+++	dump = vzalloc(NPU_DUMP_SIZE);
+++	if (dump) {
+++		regmap_bulk_read(npu->regmap, REG_PC_DBG(c), val,
+++				 ARRAY_SIZE(val));
+++		snprintf(dump, NPU_DUMP_SIZE,
+++			 "PC: %08x SP: %08x LR: %08x\n",
+++			 val[0], val[1], val[2]);
+++		dev_coredumpv(npu->dev, dump, NPU_DUMP_SIZE, GFP_KERNEL);
+++	}
++ 
++-	dev_coredumpv(npu->dev, dump, NPU_DUMP_SIZE, GFP_KERNEL);
+++	dev_warn(npu->dev, "restarting NPU core %d after watchdog timeout\n", c);
+++	if (airoha_npu_restart_core(npu, c))
+++		dev_err(npu->dev, "failed to restart NPU core %d\n", c);
++ }
++ 
++ static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
++@@ -734,6 +791,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 		return -ENOMEM;
++ 
++ 	npu->dev = dev;
+++	mutex_init(&npu->recovery_lock);
++ 	npu->ops.ppe_init = airoha_npu_ppe_init;
++ 	npu->ops.ppe_deinit = airoha_npu_ppe_deinit;
++ 	npu->ops.ppe_init_stats = airoha_npu_ppe_stats_setup;
++@@ -770,6 +828,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 
++ 		spin_lock_init(&core->lock);
++ 		core->npu = npu;
+++		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
++ 
++ 		irq = platform_get_irq(pdev, i + 1);
++ 		if (irq < 0)
++@@ -779,8 +838,6 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 				       IRQF_SHARED, "airoha-npu-wdt", core);
++ 		if (err)
++ 			return err;
++-
++-		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
++ 	}
++ 
++ 	/* wlan IRQ lines */
++diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
++index 16a988a..58fa2c7 100644
++--- a/include/linux/soc/airoha/airoha_offload.h
+++++ b/include/linux/soc/airoha/airoha_offload.h
++@@ -6,6 +6,7 @@
++ #ifndef AIROHA_OFFLOAD_H
++ #define AIROHA_OFFLOAD_H
++ 
+++#include <linux/mutex.h>
++ #include <linux/skbuff.h>
++ #include <linux/spinlock.h>
++ #include <linux/workqueue.h>
++@@ -167,6 +168,9 @@ struct airoha_npu {
++ #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
++ 	struct device *dev;
++ 	struct regmap *regmap;
+++	/* serialize NPU core recovery */
+++	struct mutex recovery_lock;
+++	bool recovering;
++ 
++ 	struct airoha_npu_core {
++ 		struct airoha_npu *npu;
++@@ -214,6 +218,7 @@ struct airoha_npu {
++ #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
++ struct airoha_npu *airoha_npu_get(struct device *dev);
++ void airoha_npu_put(struct airoha_npu *npu);
+++int airoha_npu_recover(struct airoha_npu *npu);
++ 
++ static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
++ {
++@@ -271,6 +276,11 @@ static inline void airoha_npu_put(struct airoha_npu *npu)
++ {
++ }
++ 
+++static inline int airoha_npu_recover(struct airoha_npu *npu)
+++{
+++	return -EOPNOTSUPP;
+++}
+++
++ static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
++ {
++ 	return -EOPNOTSUPP;
+diff --git a/target/linux/airoha/patches-6.18/9999-31-net-airoha-npu-fix-watchdog-work-lifetime.patch b/target/linux/airoha/patches-6.18/9999-31-net-airoha-npu-fix-watchdog-work-lifetime.patch
+new file mode 100644
+index 0000000..a224de1
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-31-net-airoha-npu-fix-watchdog-work-lifetime.patch
+@@ -0,0 +1,117 @@
++# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/924-net-airoha-npu-fix-watchdog-work-lifetime.patch
++#   （Yanghan Ye, 2026-08-07, 6668b939）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持）
++# Reason: ① devres 解开时先 free IRQ 再 sync watchdog work → 存在 probe 失败/remove 竞态
++#   （IRQ 可在手动 remove 取消 work 之后再次排队）；改为在注册 IRQ 前 devm_add_action_or_reset
++#   注册 cancel_work_sync 动作，并删除 airoha_npu_remove() 的手动 cancel；
++#   ② 导出 airoha_npu_wait_recovery() 并保留最后一次 recovery 状态（recovery_err），
++#   供遇到 -EAGAIN 的消费者等待进行中的 recovery，而不是二次重启核心。
++#   **提供 airoha_npu_wait_recovery() —— mt76 0155 的硬前置**。
++# 实证：对 linux 6.18.44 真源按序（923 → 本项）fuzz=0。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index 5ad6389..e017738 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -357,6 +357,7 @@ static int airoha_npu_restart_core(struct airoha_npu *npu, int core)
++ 
++ out:
++ 	spin_lock_bh(&npu->cores[0].lock);
+++	npu->recovery_err = err;
++ 	npu->recovering = false;
++ 	spin_unlock_bh(&npu->cores[0].lock);
++ 	mutex_unlock(&npu->recovery_lock);
++@@ -370,6 +371,18 @@ int airoha_npu_recover(struct airoha_npu *npu)
++ }
++ EXPORT_SYMBOL_GPL(airoha_npu_recover);
++ 
+++int airoha_npu_wait_recovery(struct airoha_npu *npu)
+++{
+++	int err;
+++
+++	mutex_lock(&npu->recovery_lock);
+++	err = npu->recovery_err;
+++	mutex_unlock(&npu->recovery_lock);
+++
+++	return err;
+++}
+++EXPORT_SYMBOL_GPL(airoha_npu_wait_recovery);
+++
++ static void airoha_npu_wdt_work(struct work_struct *work)
++ {
++ 	struct airoha_npu_core *core;
++@@ -397,6 +410,13 @@ static void airoha_npu_wdt_work(struct work_struct *work)
++ 		dev_err(npu->dev, "failed to restart NPU core %d\n", c);
++ }
++ 
+++static void airoha_npu_cancel_wdt_work(void *data)
+++{
+++	struct airoha_npu_core *core = data;
+++
+++	cancel_work_sync(&core->wdt_work);
+++}
+++
++ static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
++ {
++ 	struct airoha_npu_core *core = core_instance;
++@@ -829,6 +849,10 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 		spin_lock_init(&core->lock);
++ 		core->npu = npu;
++ 		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
+++		err = devm_add_action_or_reset(dev, airoha_npu_cancel_wdt_work,
+++					       core);
+++		if (err)
+++			return err;
++ 
++ 		irq = platform_get_irq(pdev, i + 1);
++ 		if (irq < 0)
++@@ -893,18 +917,8 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 	return 0;
++ }
++ 
++-static void airoha_npu_remove(struct platform_device *pdev)
++-{
++-	struct airoha_npu *npu = platform_get_drvdata(pdev);
++-	int i;
++-
++-	for (i = 0; i < ARRAY_SIZE(npu->cores); i++)
++-		cancel_work_sync(&npu->cores[i].wdt_work);
++-}
++-
++ static struct platform_driver airoha_npu_driver = {
++ 	.probe = airoha_npu_probe,
++-	.remove = airoha_npu_remove,
++ 	.driver = {
++ 		.name = "airoha-npu",
++ 		.of_match_table = of_airoha_npu_match,
++diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
++index 58fa2c7..ab2aee1 100644
++--- a/include/linux/soc/airoha/airoha_offload.h
+++++ b/include/linux/soc/airoha/airoha_offload.h
++@@ -171,6 +171,7 @@ struct airoha_npu {
++ 	/* serialize NPU core recovery */
++ 	struct mutex recovery_lock;
++ 	bool recovering;
+++	int recovery_err;
++ 
++ 	struct airoha_npu_core {
++ 		struct airoha_npu *npu;
++@@ -219,6 +220,7 @@ struct airoha_npu {
++ struct airoha_npu *airoha_npu_get(struct device *dev);
++ void airoha_npu_put(struct airoha_npu *npu);
++ int airoha_npu_recover(struct airoha_npu *npu);
+++int airoha_npu_wait_recovery(struct airoha_npu *npu);
++ 
++ static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
++ {
++@@ -281,6 +283,11 @@ static inline int airoha_npu_recover(struct airoha_npu *npu)
++ 	return -EOPNOTSUPP;
++ }
++ 
+++static inline int airoha_npu_wait_recovery(struct airoha_npu *npu)
+++{
+++	return -EOPNOTSUPP;
+++}
+++
++ static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
++ {
++ 	return -EOPNOTSUPP;
+diff --git a/target/linux/airoha/patches-6.18/9999-32-net-airoha-npu-close-recovery-synchronization-race.patch b/target/linux/airoha/patches-6.18/9999-32-net-airoha-npu-close-recovery-synchronization-race.patch
+new file mode 100644
+index 0000000..70ccfab
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-32-net-airoha-npu-close-recovery-synchronization-race.patch
+@@ -0,0 +1,93 @@
++# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/925-net-airoha-npu-close-recovery-synchronization-race.patch
++#   （Yanghan Ye, 2026-08-07, 203581db）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持）
++# Reason: recovery flag 只在 core 0 锁下更新，而检查发生在“所选 mailbox core”锁下——多 mailbox
++#   core 启用后成为数据竞争。改用 atomic_t recovering；置位后 acquire/release **每个** core 锁
++#   以排空已通过检查的请求；新请求在 restart+状态更新完成前一律 -EAGAIN。
++# 实证：923 → 924-fix → 本项 对 6.18.44 真源 fuzz=0。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index e017738..7c7979c 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -189,7 +189,7 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
++ 	 * foe_commit under atomic context).
++ 	 */
++ 	spin_lock_bh(&core->lock);
++-	if (npu->recovering) {
+++	if (atomic_read(&npu->recovering)) {
++ 		ret = -EAGAIN;
++ 		goto unlock;
++ 	}
++@@ -331,24 +331,26 @@ static int airoha_npu_restart_core(struct airoha_npu *npu, int core)
++ 		return -EINVAL;
++ 
++ 	mutex_lock(&npu->recovery_lock);
+++	atomic_set(&npu->recovering, 1);
+++
+++	/* Drain mailbox requests which passed the recovery check. */
+++	for (i = 0; i < ARRAY_SIZE(npu->cores); i++) {
+++		spin_lock_bh(&npu->cores[i].lock);
+++		spin_unlock_bh(&npu->cores[i].lock);
+++	}
++ 
++-	spin_lock_bh(&npu->cores[0].lock);
++-	npu->recovering = true;
++ 	err = regmap_read(npu->regmap, REG_CR_BOOT_CONFIG, &val);
++-	spin_unlock_bh(&npu->cores[0].lock);
++ 	if (err)
++ 		goto out;
++ 
++ 	val = (val & GENMASK(7, 0)) | BIT(8 + core);
++ 	for (i = 0; i < 2; i++) {
++-		spin_lock_bh(&npu->cores[0].lock);
++ 		err = regmap_write(npu->regmap, REG_CR_BOOT_CONFIG, val);
++ 		if (!err && !core)
++ 			err = regmap_write(npu->regmap, REG_CR_NPU_MIB(0),
++ 					   U32_MAX);
++ 		if (!err)
++ 			err = regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER, 2);
++-		spin_unlock_bh(&npu->cores[0].lock);
++ 		if (err)
++ 			break;
++ 
++@@ -356,10 +358,8 @@ static int airoha_npu_restart_core(struct airoha_npu *npu, int core)
++ 	}
++ 
++ out:
++-	spin_lock_bh(&npu->cores[0].lock);
++ 	npu->recovery_err = err;
++-	npu->recovering = false;
++-	spin_unlock_bh(&npu->cores[0].lock);
+++	atomic_set(&npu->recovering, 0);
++ 	mutex_unlock(&npu->recovery_lock);
++ 
++ 	return err;
++@@ -812,6 +812,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
++ 
++ 	npu->dev = dev;
++ 	mutex_init(&npu->recovery_lock);
+++	atomic_set(&npu->recovering, 0);
++ 	npu->ops.ppe_init = airoha_npu_ppe_init;
++ 	npu->ops.ppe_deinit = airoha_npu_ppe_deinit;
++ 	npu->ops.ppe_init_stats = airoha_npu_ppe_stats_setup;
++diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
++index ab2aee1..afc6402 100644
++--- a/include/linux/soc/airoha/airoha_offload.h
+++++ b/include/linux/soc/airoha/airoha_offload.h
++@@ -6,6 +6,7 @@
++ #ifndef AIROHA_OFFLOAD_H
++ #define AIROHA_OFFLOAD_H
++ 
+++#include <linux/atomic.h>
++ #include <linux/mutex.h>
++ #include <linux/skbuff.h>
++ #include <linux/spinlock.h>
++@@ -170,7 +171,7 @@ struct airoha_npu {
++ 	struct regmap *regmap;
++ 	/* serialize NPU core recovery */
++ 	struct mutex recovery_lock;
++-	bool recovering;
+++	atomic_t recovering;
++ 	int recovery_err;
++ 
++ 	struct airoha_npu_core {
+diff --git a/target/linux/airoha/patches-6.18/9999-33-net-airoha-fix-offload-provider-device-link-lifetime.patch b/target/linux/airoha/patches-6.18/9999-33-net-airoha-fix-offload-provider-device-link-lifetime.patch
+new file mode 100644
+index 0000000..021f0bd
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-33-net-airoha-fix-offload-provider-device-link-lifetime.patch
+@@ -0,0 +1,34 @@
++# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/926-net-airoha-fix-offload-provider-device-link-lifetime.patch
++#   （Yanghan Ye, 2026-08-07, dca2a8c9）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持）
++# Reason: airoha_npu_get()/airoha_ppe_get_dev() 在 consumer probe 期建 device link，用
++#   DL_FLAG_AUTOREMOVE_SUPPLIER 会在 Wi-Fi consumer unbind 后**留下 link**，违反 device-link
++#   契约；后续 reload 会继承陈旧 consumer 状态。改 DL_FLAG_AUTOREMOVE_CONSUMER。
++#   与 mt76 侧 0154（DMA 内存挂 consumer）为同一“consumer 生命周期”主题的不同侧面。
++# 实证：对 6.18.44 真源 + 本仓 PPE 系列内层（9990/9995/9996/9997/9998）按序 fuzz=0。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index 7c7979c..78472b4 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -730,7 +730,7 @@ struct airoha_npu *airoha_npu_get(struct device *dev)
++ 		goto error_module_put;
++ 	}
++ 
++-	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_SUPPLIER)) {
+++	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
++ 		dev_err(&pdev->dev,
++ 			"failed to create device link to consumer %s\n",
++ 			dev_name(dev));
++diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
++index 6ea91ff..c9ddadb 100644
++--- a/drivers/net/ethernet/airoha/airoha_ppe.c
+++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
++@@ -1574,7 +1574,7 @@ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
++ 	if (!eth)
++ 		goto error_module_put;
++ 
++-	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_SUPPLIER)) {
+++	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
++ 		dev_err(&pdev->dev,
++ 			"failed to create device link to consumer %s\n",
++ 			dev_name(dev));
+diff --git a/target/linux/airoha/patches-6.18/9999-34-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ.patch b/target/linux/airoha/patches-6.18/9999-34-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ.patch
+new file mode 100644
+index 0000000..e5b83a3
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-34-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ.patch
+@@ -0,0 +1,21 @@
++# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/927-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ.patch
++#   （Yanghan Ye, 2026-08-07, 2b1f16ab）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持）
++# Reason: REG_IRQ_STATUS 同时含两个 WLAN RX ring 的 pending 位；mt76 handler 把
++#   wlan_get_irq_status() 的返回值写回此 write-one-to-clear 寄存器 → **一个 ring 的 handler
++#   会清掉另一个 ring 的 pending 位**（丢中断）。按 Airoha SDK 只返回请求位（& NPU_IRQ_RX_MASK(q)）。
++#   与 mt76 0153 的 IRQ teardown 直接配套。
++# 实证：fuzz=0（1 行）。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index 78472b4..8588f37 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -686,7 +686,7 @@ static u32 airoha_npu_wlan_irq_status_get(struct airoha_npu *npu, int q)
++ 	u32 val;
++ 
++ 	regmap_read(npu->regmap, REG_IRQ_STATUS, &val);
++-	return val;
+++	return val & NPU_IRQ_RX_MASK(q);
++ }
++ 
++ static void airoha_npu_wlan_irq_enable(struct airoha_npu *npu, int q)
+diff --git a/target/linux/airoha/patches-6.18/9999-35-net-airoha-npu-publish-mailbox-command-before-doorbell.patch b/target/linux/airoha/patches-6.18/9999-35-net-airoha-npu-publish-mailbox-command-before-doorbell.patch
+new file mode 100644
+index 0000000..d3ac532
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-35-net-airoha-npu-publish-mailbox-command-before-doorbell.patch
+@@ -0,0 +1,25 @@
++# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/928-net-airoha-npu-publish-mailbox-command-before-doorbell.patch
++#   （Yanghan Ye, 2026-08-09）—— 2026-09-12 P3-A 吸收，#EXP
++# Upstream: n/a（作者自持；原补丁头部缺 From/SHA 行，此处按 diff 重封装）
++# Reason: 固件把 MBQ0_CTRL2 自增当门铃；当前先自增 CTRL2 再写 CTRL3，固件可能消费上一轮 CTRL3
++#   → 请求以陈旧状态/数据完成。AN7581+MT7996 上表现为 **probe 时固件版本 0.0**、随后 PPE/WLAN
++#   卸载请求被拒。改为先写 CTRL3（发布完整请求）再自增 CTRL2，与 SDK mailbox 协议一致。
++#   **这是 probe 0.1111 的关键修复之一**。
++# 实证：923/924fix/925/926/927 → 本项 对 6.18.44 真源 fuzz=0。
++diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
++index 8588f37..ff0ed7c 100644
++--- a/drivers/net/ethernet/airoha/airoha_npu.c
+++++ b/drivers/net/ethernet/airoha/airoha_npu.c
++@@ -198,10 +198,10 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
++ 
++ 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(0) + offset, core->addr);
++ 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(1) + offset, len);
++-	regmap_read(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, &val);
++-	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, val + 1);
++ 	val = FIELD_PREP(MBOX_MSG_FUNC_ID, func_id) | MBOX_MSG_WAIT_RSP;
++ 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(3) + offset, val);
+++	regmap_read(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, &val);
+++	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, val + 1);
++ 
++ 	ret = regmap_read_poll_timeout_atomic(npu->regmap,
++ 					      REG_CR_MBQ0_CTRL(3) + offset,

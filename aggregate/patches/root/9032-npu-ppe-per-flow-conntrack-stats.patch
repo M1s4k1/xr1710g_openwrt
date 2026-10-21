@@ -1,0 +1,120 @@
+diff --git a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+--- a/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
++++ b/package/luci-app-airoha-flowsense/root/usr/libexec/rpcd/luci.airoha_flowsense
+@@ -522,6 +522,97 @@ get_ppe_entries() {
+ 	printf '{"bnd":%s,"unb":%s}' "$bnd_json" "$unb_json"
+ }
+ 
++get_ppe_flow_stats() {
++	local bind_file="/sys/kernel/debug/ppe/bind"
++	local entries_file="/sys/kernel/debug/ppe/entries"
++	local ct_file="/proc/net/nf_conntrack"
++	local file_args=""
++
++	# Issue #5: airoha_eth PPE debugfs packets/bytes are always 0.
++	# Until the upstream driver fills them, join each PPE flow with its
++	# conntrack entry (both original and reply tuple) and report the
++	# per-flow packets/bytes that conntrack still accounts for HW_OFFLOAD
++	# flows. This gives the single-flow hardware-forwarding visibility
++	# that the PPE debugfs counters were supposed to provide.
++	[ -f "$ct_file" ] && file_args="$file_args $ct_file"
++	[ -f "$bind_file" ] && file_args="$file_args $bind_file"
++	[ -f "$entries_file" ] && file_args="$file_args $entries_file"
++
++	if [ -z "$file_args" ]; then
++		echo '{"available":false}'
++		return
++	fi
++
++	awk -v ct_file="$ct_file" -v bind_file="$bind_file" -v entries_file="$entries_file" '
++	BEGIN {
++		bnd_total=0; bnd_ct_matched=0; bnd_hw=0; bnd_hw_pkt=0; bnd_hw_byte=0
++		unb_total=0; unb_ct_matched=0
++		saw_bind=0; saw_entries=0
++		arr=""
++	}
++	{
++		if (FILENAME == ct_file) {
++			if ($1 != "ipv4" && $1 != "ipv6") next
++			line=$0
++			hw=(index(line, "[HW_OFFLOAD]") > 0) ? 1 : 0
++			src1=dst1=sport1=dport1=pkt1=byte1=""
++			src2=dst2=sport2=dport2=pkt2=byte2=""
++			for (i=5; i<=NF; i++) {
++				if ($i ~ /^src=/) { if (src1=="") src1=substr($i,5); else src2=substr($i,5) }
++				else if ($i ~ /^dst=/) { if (dst1=="") dst1=substr($i,5); else dst2=substr($i,5) }
++				else if ($i ~ /^sport=/) { if (sport1=="") sport1=substr($i,7); else sport2=substr($i,7) }
++				else if ($i ~ /^dport=/) { if (dport1=="") dport1=substr($i,7); else dport2=substr($i,7) }
++				else if ($i ~ /^packets=/) { if (pkt1=="") pkt1=substr($i,9); else pkt2=substr($i,9) }
++				else if ($i ~ /^bytes=/) { if (byte1=="") byte1=substr($i,7); else byte2=substr($i,7) }
++			}
++			if (src1 != "") ct[src1 ":" sport1 "->" dst1 ":" dport1]=pkt1 " " byte1 " " hw
++			if (src2 != "") ct[src2 ":" sport2 "->" dst2 ":" dport2]=pkt2 " " byte2 " " hw
++			next
++		}
++
++		if (FILENAME == bind_file) {
++			saw_bind=1
++			if ($0 !~ /^[0-9a-fA-F]+ /) next
++		} else if (FILENAME == entries_file) {
++			saw_entries=1
++			if ($0 !~ /^[0-9a-fA-F]+ / || $2 != "UNB") next
++		} else {
++			next
++		}
++
++		idx=$1; state=$2
++		if ($3 == "IPv4" || $3 == "IPv6") { type=$3; proto=$4 }
++		else { type=$3; proto=$4 }
++		orig=""; match($0, /orig=[^ ]+/); if (RSTART>0) orig=substr($0, RSTART+5, RLENGTH-5)
++		new_flow=""; match($0, /new=[^ ]+/); if (RSTART>0) new_flow=substr($0, RSTART+4, RLENGTH-4)
++		eth=""; match($0, /eth=[^ ]+/); if (RSTART>0) eth=substr($0, RSTART+4, RLENGTH-4)
++		ppe_pkt="0"; match($0, /packets=[^ ]+/); if (RSTART>0) ppe_pkt=substr($0, RSTART+8, RLENGTH-8)
++		ppe_byte="0"; match($0, /bytes=[^ ]+/); if (RSTART>0) ppe_byte=substr($0, RSTART+6, RLENGTH-6)
++
++		cpkt=0; cbyte=0; chw=0
++		if (orig != "" && orig in ct) { split(ct[orig], v, " "); cpkt=v[1]+0; cbyte=v[2]+0; chw=v[3]+0 }
++
++		if (state == "BND") {
++			bnd_total++
++			if (cpkt>0 || cbyte>0 || chw>0) bnd_ct_matched++
++			if (chw>0) { bnd_hw++; bnd_hw_pkt+=cpkt; bnd_hw_byte+=cbyte }
++		} else {
++			unb_total++
++			if (cpkt>0 || cbyte>0 || chw>0) unb_ct_matched++
++		}
++
++		e=sprintf("{\"index\":\"%s\",\"state\":\"%s\",\"type\":\"%s\",\"proto\":\"%s\",\"orig\":\"%s\",\"new_flow\":\"%s\",\"eth\":\"%s\",\"ppe_packets\":%s,\"ppe_bytes\":%s,\"ct_packets\":%d,\"ct_bytes\":%d,\"hw_offload\":%d}", idx, state, type, proto, orig, new_flow, eth, ppe_pkt, ppe_byte, cpkt, cbyte, chw)
++		if (arr == "") arr=e; else arr=arr "," e
++	}
++
++	END {
++		avail=(saw_bind || saw_entries) ? "true" : "false"
++		printf "{\"available\":%s,\"source\":\"conntrack\",\"ppe_packets_bytes_note\":\"PPE debugfs packets/bytes stay 0 (issue #5); ct_packets/ct_bytes are joined from /proc/net/nf_conntrack\",\"flows\":[%s],\"summary\":{\"bnd_total\":%d,\"bnd_ct_matched\":%d,\"bnd_hw\":%d,\"bnd_hw_packets\":%d,\"bnd_hw_bytes\":%d,\"unb_total\":%d,\"unb_ct_matched\":%d}}\n", avail, arr, bnd_total, bnd_ct_matched, bnd_hw, bnd_hw_pkt, bnd_hw_byte, unb_total, unb_ct_matched
++	}
++	' $file_args 2>/dev/null || echo '{"available":false}'
++}
++
++
+ get_token_info() {
+ 	# Per-band WiFi station stats (count, retries) from iw — works regardless of debugfs.
+ 	local sta_json="" band
+@@ -1431,7 +1522,7 @@ get_eth_stats() {
+ 
+ case "$1" in
+ 	list)
+-		echo '{"getStatus":{},"getPpeEntries":{},"getTokenInfo":{},"getFrameEngine":{},"getTxStats":{},"getVlanOffload":{},"setVlanOffload":{"enabled":"int"},"getFlowOffload":{},"setFlowOffload":{"enabled":"int"},"getPppoeOffload":{},"setPppoeOffload":{"enabled":"int"},"getDeviceMode":{},"getWanHealth":{},"getJitterResult":{},"getWifiStats":{},"getBridgeStats":{},"getNpuBypass":{},"getConflictAlerts":{},"getEthStats":{}}'
++		echo '{"getStatus":{},"getPpeEntries":{},"getPpeFlowStats":{},"getTokenInfo":{},"getFrameEngine":{},"getTxStats":{},"getVlanOffload":{},"setVlanOffload":{"enabled":"int"},"getFlowOffload":{},"setFlowOffload":{"enabled":"int"},"getPppoeOffload":{},"setPppoeOffload":{"enabled":"int"},"getDeviceMode":{},"getWanHealth":{},"getJitterResult":{},"getWifiStats":{},"getBridgeStats":{},"getNpuBypass":{},"getConflictAlerts":{},"getEthStats":{}}'
+ 		;;
+ 	call)
+ 		case "$2" in
+@@ -1441,6 +1532,9 @@ case "$1" in
+ 			getPpeEntries)
+ 				get_ppe_entries
+ 				;;
++			getPpeFlowStats)
++				get_ppe_flow_stats
++				;;
+ 			getTokenInfo)
+ 				get_token_info
+ 				;;

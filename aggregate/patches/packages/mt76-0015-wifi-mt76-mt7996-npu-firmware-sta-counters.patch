@@ -1,0 +1,88 @@
+From: Gilly <gilroyscott1970@gmail.com>
+Date: Thu, 10 Sep 2026 00:00:00 +0000
+Subject: [PATCH] wifi: mt76: mt7996: report firmware station counters under NPU offload
+
+#EXP/0015 —— 合并 Gilly 039 + 046（2026-09-12 调研吸收，B2 对账 + 父代理真源实证）：
+  * 039（hunk1）：mt7996_mac_work() 的 ADM_STAT/MSDU_COUNT 轮询门只判 WED →
+    扩到 `|| mt76_npu_device_active()`，让 NPU 板也采集固件 per-wcid 计数器。本仓 mt76-0003
+    恰好改了同一 hunk 的上面两行（加 AIR_TIME/PER_STA_RSSI）却**没动这个门** → NPU 板每站
+    tx/rx bytes/packets 恒 0（B2 实测确认）。本 hunk 已按 0003 之后的上下文重基（原版上下文
+    不含那两行，直接应用会 FAILED）。
+  * 046（hunk2）：mt7996_sta_statistics() 只在 WED active 时报固件计数器；NPU 卸载同样绕过
+    mac80211，软件计数 30s 只看到 161 包 vs 固件 8937 包（5GHz）。改为 WED||NPU 上报；但固件
+    计数仍为 0 时留给 mac80211（W1700K 5GHz 站 ADM_STAT 字节计数常为 0，硬 0 更糟）。
+  依赖：046 的固件计数器由 039 扩开的轮询喂给，二者必须同档 → 合为一个补丁。
+  档位：与 mt76-0013/0014 一致为 #EXP（实机验证后毕业）。
+  实机判据：NPU 板上 `iw station dump` 每站 tx/rx bytes 与 packets 非 0 且随流量增长。
+
+Signed-off-by: Gilly <gilroyscott1970@gmail.com>
+
+---
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -2852,10 +2852,11 @@
+ 		mt7996_mac_update_stats(phy);
+ 
+ 		mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_RATE);
+ 		mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_AIR_TIME);
+ 		mt7996_mcu_get_per_sta_info(phy, UNI_PER_STA_RSSI);
+-		if (mtk_wed_device_active(&phy->dev->mt76.mmio.wed)) {
++		if (mtk_wed_device_active(&phy->dev->mt76.mmio.wed) ||
++		    mt76_npu_device_active(&phy->dev->mt76)) {
+ 			mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_ADM_STAT);
+ 			mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_MSDU_COUNT);
+ 		}
+ 	}
+
+diff --git a/mt7996/main.c b/mt7996/main.c
+index 9f6afaf3..df1ceb07 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -1994,18 +1994,38 @@ static void mt7996_sta_statistics(struct ieee80211_hw *hw,
+ 		-(s8)ewma_avg_signal_read(&msta_link->avg_ack_signal);
+ 	sinfo->filled |= BIT_ULL(NL80211_STA_INFO_ACK_SIGNAL_AVG);
+ 
+-	if (mtk_wed_device_active(&dev->mt76.mmio.wed)) {
+-		sinfo->tx_bytes = msta_link->wcid.stats.tx_bytes;
+-		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_BYTES64);
++	if (mtk_wed_device_active(&dev->mt76.mmio.wed) ||
++	    mt76_npu_device_active(&dev->mt76)) {
++		struct mt76_sta_stats *stats = &msta_link->wcid.stats;
++		bool wed = mtk_wed_device_active(&dev->mt76.mmio.wed);
++
++		/* With WED or NPU offload most frames never pass through
++		 * mac80211, so its software counters undercount badly.
++		 * Report the firmware counters polled by mt7996_mac_work()
++		 * instead. Under NPU, a firmware counter that is still zero
++		 * is left to mac80211: the ADM_STAT byte counters are not
++		 * populated on every band, and a hard zero would be worse
++		 * than the partial software count.
++		 */
++		if (wed || stats->tx_bytes) {
++			sinfo->tx_bytes = stats->tx_bytes;
++			sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_BYTES64);
++		}
+ 
+-		sinfo->rx_bytes = msta_link->wcid.stats.rx_bytes;
+-		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_RX_BYTES64);
++		if (wed || stats->rx_bytes) {
++			sinfo->rx_bytes = stats->rx_bytes;
++			sinfo->filled |= BIT_ULL(NL80211_STA_INFO_RX_BYTES64);
++		}
+ 
+-		sinfo->tx_packets = msta_link->wcid.stats.tx_packets;
+-		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_PACKETS);
++		if (wed || stats->tx_packets) {
++			sinfo->tx_packets = stats->tx_packets;
++			sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_PACKETS);
++		}
+ 
+-		sinfo->rx_packets = msta_link->wcid.stats.rx_packets;
+-		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_RX_PACKETS);
++		if (wed || stats->rx_packets) {
++			sinfo->rx_packets = stats->rx_packets;
++			sinfo->filled |= BIT_ULL(NL80211_STA_INFO_RX_PACKETS);
++		}
+ 	}
+ }
+ 

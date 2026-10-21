@@ -1,0 +1,51 @@
+# Source: OpenWRT-fanboy/OpenW1700k ubi2-oc e7a8143b1e67（fetched 2026-08-22；rebuilt diff against openwrt/mt76 59676919）
+# Upstream: n/a（fanboy 自持；mt76 master b2704cf5 仍为 WARN_ON_ONCE+return，未合入）
+# Reason: TXFREE 截断事件静默处理，避免良性固件事件打 WARN 并漏 cleanup
+
+From e7a8143b1e670c9afc2405b152f46917bfef6662 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Wed, 19 Aug 2026 15:54:54 +0000
+Subject: [PATCH] mt76: mt7996: handle truncated txfree events silently
+
+The MT7996 firmware occasionally emits a TX completion (TXFREE) event
+whose header (MT_TXFREE0_MSDU_CNT) declares more MSDU descriptors than
+are actually present in the received buffer, and which can reference a
+wcid the driver has already released. It is observed once during the
+initial TX burst at AP bring-up and does not recur in steady state.
+
+The old WARN_ON_ONCE((void *)cur_info >= end) guard in
+mt7996_mac_tx_free() caught the overrun, but it had two problems:
+
+  * It emitted a full WARN splat for a benign, self-limiting firmware
+    artifact. The frame was attributed to mt7996_mac_reset_sta_iter()
+    because the module's local symbols are stripped from kallsyms and
+    the address fell inside the span of that symbol, making it look like
+    a chip-reset failure when it is actually a TXFREE parse overrun.
+
+  * On a truncated event it returned out of the function, skipping the
+    tail that frees the accumulated skbs (free_list), releases the
+    completed tokens and reschedules the TX worker. Every truncated
+    event therefore leaked its completed skbs.
+
+Turn the guard into a plain bounds check that breaks out of the
+descriptor loop after parsing the valid prefix and then falls through
+to the normal cleanup path (skb free, sta poll, worker schedule). The
+truncated remainder of the malformed event is dropped silently; MSDU
+tokens that were never reported are reclaimed by the regular tx-status
+timeout, so nothing is leaked and no kernel log is emitted.
+---
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index 9f03f98..8499fb3 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1317,8 +1317,8 @@ mt7996_mac_tx_free(struct mt7996_dev *dev, void *data, int len)
+ 		u32 msdu, info;
+ 		u8 i;
+ 
+-		if (WARN_ON_ONCE((void *)cur_info >= end))
+-			return;
++		if ((void *)cur_info >= end)
++			break;
+ 		/* 1'b1: new wcid pair.
+ 		 * 1'b0: msdu_id with the same 'wcid pair' as above.
+ 		 */

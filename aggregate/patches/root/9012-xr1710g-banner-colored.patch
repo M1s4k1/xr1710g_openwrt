@@ -1,0 +1,25 @@
+From 36da8e02b2e12f56ff3582770da2a34499d42613 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Sat, 10 Jan 2026 09:58:15 -1000
+Subject: base-files: colored login banner
+
+ANSI-colored banner for easier visual orientation on the XR1710G console.
+
+（2026-08-17 F13 切片：源 = vendor/fanboy/08-reliability-compat-36da8e02.patch 的 banner 段；
+ 重建/应用顺序实证见 FIXES F13。上游：n/a（自用可靠性/体验项，不打算上游））
+---
+diff --git a/package/base-files/files/etc/banner b/package/base-files/files/etc/banner
+index f3af3c0..0c78ac8 100644
+--- a/package/base-files/files/etc/banner
++++ b/package/base-files/files/etc/banner
+@@ -1,8 +1,8 @@
+-  _______                     ________        __
++[38;5;39m  _______                     ________        __
+  |       |.-----.-----.-----.|  |  |  |.----.|  |_
+  |   -   ||  _  |  -__|     ||  |  |  ||   _||   _|
+  |_______||   __|_____|__|__||________||__|  |____|
+-          |__| W I R E L E S S   F R E E D O M
++          |__| [0mW I R E L E S S   F R E E D O M
+  -----------------------------------------------------
+  %D %V, %C
+  -----------------------------------------------------

@@ -1,0 +1,118 @@
+# Source: YYH2913/openwrt xr1710g-6.18-integration package/kernel/mac80211/patches/subsys（fetched 2026-08-22；diff 与 e88fbe28 一致，仅签名顺序不同）
+# Upstream: n/a（integration 树携带；导出 mac80211 link_sta 能力上限 helper，供 mt76 9993 使用）
+# Reason: 9993（op_mode 传递）的编译依赖——mac80211 backport 未导出 cap_bw/cap_nss，实验档随 9993 一起携带
+# 2026-09-07 对 backports/mac80211 7.2 重建：vht.c hunk 在 7.2 失败（vht.c:445 已重构为 MU_GROUPS 代码），
+#   实现迁入 sta_info.c（ieee80211_sta_bw_capability 之后，提交 b978e02e）。
+# 2026-09-08 修复 ci-97 构建失败（run 34107054747）：b978e02e 版引用 pub->band——struct ieee80211_link_sta
+#   在 7.2 与 6.18 均无 band 成员（只有当前操作值 bandwidth），mac80211 包编译直接报错；
+#   按 naoki66 9009304b6 参考实现重写：band 取自 link_conf->chanreq.oper.chan->band（含 WARN_ON 守卫），
+#   link_sta/link_conf 走 rcu 临界区，bw/nss 缺省回退 20/1。
+#   （naoki66 版另含 min(bw, rx_omi_bw_rx)——rx_omi_bw_rx 初值 IEEE80211_STA_RX_BW_MAX（sta_info.c:578），
+#   未做 RX OMI 收窄前等效于不夹取，故一并采纳。声明 hunk 沿用本仓既有 8176 版（计数自洽、已在真实 CI 应用），
+#   实现 hunk 取 naoki66 3803 版。）
+From: Yanghan Ye <yyh94306@gmail.com>
+Date: Tue, 14 Jul 2026 13:10:00 +1100
+Subject: [PATCH] wifi: mac80211: export link STA capability limits
+
+Drivers that pass operating-mode information to firmware need both the
+station's capability limits and its current, possibly OMI-restricted,
+operating values.  The latter are public in ieee80211_link_sta while the
+former remain private to mac80211.
+
+Export the capability bandwidth and NSS helpers used by MediaTek's
+operating-mode handling so mt7996 can construct STA_REC_RA without
+confusing capability limits with the current operating mode.
+
+Adapt the helper placement for mac80211 7.2, where STA bandwidth helper
+logic moved from vht.c into sta_info.c.
+
+Assisted-by: Codex:gpt-5.6-sol
+Co-developed-by: naoki66 <naoki66@qq.com>
+Signed-off-by: Yanghan Ye <yyh94306@gmail.com>
+Signed-off-by: naoki66 <naoki66@qq.com>
+---
+ include/net/mac80211.h  | 17 +++++++++++++++++
+ net/mac80211/sta_info.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 57 insertions(+)
+
+diff --git a/include/net/mac80211.h b/include/net/mac80211.h
+index fb49ad9..938c761 100644
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -8176,6 +8176,23 @@ bool ieee80211_prepare_rx_omi_bw(struct ieee80211_link_sta *link_sta,
+  * as well.
+  */
+ void ieee80211_finalize_rx_omi_bw(struct ieee80211_link_sta *link_sta);
++/**
++ * ieee80211_link_sta_cap_bw - get a link STA's bandwidth capability
++ * @link_sta: public link STA information
++ *
++ * Return: the capability bandwidth before operating-mode restrictions
++ */
++enum ieee80211_sta_rx_bandwidth
++ieee80211_link_sta_cap_bw(struct ieee80211_link_sta *link_sta);
++
++/**
++ * ieee80211_link_sta_cap_nss - get a link STA's spatial-stream capability
++ * @link_sta: public link STA information
++ *
++ * Return: the capability NSS before operating-mode restrictions
++ */
++u8 ieee80211_link_sta_cap_nss(struct ieee80211_link_sta *link_sta);
++
+ 
+ /* for older drivers - let's not document these ... */
+ int ieee80211_emulate_add_chanctx(struct ieee80211_hw *hw,
+diff --git a/net/mac80211/sta_info.c b/net/mac80211/sta_info.c
+index 2cca8b5..99e6f31 100644
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -3803,6 +3803,46 @@ ieee80211_sta_current_bw(struct link_sta_info *link_sta,
+ 	return IEEE80211_STA_RX_BW_20;
+ }
+ 
++enum ieee80211_sta_rx_bandwidth
++ieee80211_link_sta_cap_bw(struct ieee80211_link_sta *pub)
++{
++	struct sta_info *sta = container_of(pub->sta, struct sta_info, sta);
++	struct ieee80211_bss_conf *link_conf;
++	struct link_sta_info *link_sta;
++	enum ieee80211_sta_rx_bandwidth bw = IEEE80211_STA_RX_BW_20;
++	enum nl80211_band band;
++
++	rcu_read_lock();
++	link_sta = rcu_dereference(sta->link[pub->link_id]);
++	link_conf = rcu_dereference(sta->sdata->vif.link_conf[pub->link_id]);
++	if (!WARN_ON_ONCE(!link_sta || !link_conf ||
++			  !link_conf->chanreq.oper.chan)) {
++		band = link_conf->chanreq.oper.chan->band;
++		bw = ieee80211_sta_bw_capability(link_sta, band);
++		bw = min(bw, link_sta->rx_omi_bw_rx);
++	}
++	rcu_read_unlock();
++
++	return bw;
++}
++EXPORT_SYMBOL(ieee80211_link_sta_cap_bw);
++
++u8 ieee80211_link_sta_cap_nss(struct ieee80211_link_sta *pub)
++{
++	struct sta_info *sta = container_of(pub->sta, struct sta_info, sta);
++	struct link_sta_info *link_sta;
++	u8 nss = 1;
++
++	rcu_read_lock();
++	link_sta = rcu_dereference(sta->link[pub->link_id]);
++	if (!WARN_ON_ONCE(!link_sta))
++		nss = link_sta->capa_nss;
++	rcu_read_unlock();
++
++	return nss;
++}
++EXPORT_SYMBOL(ieee80211_link_sta_cap_nss);
++
+ bool ieee80211_link_sta_update_rc_bw(struct ieee80211_link_data *link,
+ 				     struct link_sta_info *link_sta)
+ {
+-- 
+2.51.0

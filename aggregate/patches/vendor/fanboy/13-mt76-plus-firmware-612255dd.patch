@@ -1,0 +1,29 @@
+From 612255dded0149ef399c675aea7d94db1c0dbcb4 Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Wed, 29 Jul 2026 04:40:33 +0000
+Subject: [PATCH] 08-06-26 mt76 plus 20260721 firmware
+
+---
+ package/kernel/mt76/Makefile | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/package/kernel/mt76/Makefile b/package/kernel/mt76/Makefile
+index a8df287c5256e9..452c6528dc0506 100644
+--- a/package/kernel/mt76/Makefile
++++ b/package/kernel/mt76/Makefile
+@@ -6,11 +6,11 @@ PKG_RELEASE=1
+ PKG_LICENSE:=BSD-3-Clause-Clear
+ PKG_LICENSE_FILES:=
+ 
+-PKG_SOURCE_URL:=https://github.com/openwrt/mt76
++PKG_SOURCE_URL:=https://github.com/OpenWRT-fanboy/mt76-firmware
+ PKG_SOURCE_PROTO:=git
+-PKG_SOURCE_DATE:=2026-07-01
+-PKG_SOURCE_VERSION:=59676919ea408b0b13a9d23f2e2e1a1ab407fba1
+-PKG_MIRROR_HASH:=8a6dc6dac37ed56fcbfd874359f5c25acb65bcfaa795d50494cba17c98405dd5
++PKG_SOURCE_DATE:=2026-08-06
++PKG_SOURCE_VERSION:=8853593400c1144a433fc6356a1110f850154601
++PKG_MIRROR_HASH:=skip
+ 
+ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
+ PKG_USE_NINJA:=0

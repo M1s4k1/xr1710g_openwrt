@@ -1,0 +1,47 @@
+#!/bin/sh
+# XR1710G: probe the real DSA LED sysfs prefix and rewrite system LED config.
+# Kernel 6.18.44@93cf01b exposes mt7530-0:*; older baselines expose mt7530_dsa-0:*.
+# The default /etc/config/system ships mt7530_dsa-0:* (c2f4ade), so on new kernels
+# led start exits 1 and all PHY LEDs stay dark. Make first boot robust for both.
+prefix_old="mt7530_dsa-0"
+prefix_new="mt7530-0"
+prefix=""
+
+for d in /sys/class/leds/${prefix_new}:*; do
+  if [ -d "$d" ]; then
+    prefix="$prefix_new"
+    break
+  fi
+done
+if [ -z "$prefix" ]; then
+  for d in /sys/class/leds/${prefix_old}:*; do
+    if [ -d "$d" ]; then
+      prefix="$prefix_old"
+      break
+    fi
+  done
+fi
+[ -n "$prefix" ] || exit 0
+
+changed=0
+i=0
+while uci -q get system.@led[$i] >/dev/null 2>&1; do
+  sysfs="$(uci -q get system.@led[$i].sysfs 2>/dev/null)"
+  case "$sysfs" in
+    ${prefix_old}:*)
+      uci set system.@led[$i].sysfs="${prefix}:${sysfs#${prefix_old}:}"
+      changed=1
+      ;;
+    ${prefix_new}:*)
+      uci set system.@led[$i].sysfs="${prefix}:${sysfs#${prefix_new}:}"
+      changed=1
+      ;;
+  esac
+  i=$((i+1))
+done
+
+if [ "$changed" = "1" ]; then
+  uci commit system
+  logger -t xr1710g-led "LED sysfs prefix set to ${prefix}"
+fi
+exit 0

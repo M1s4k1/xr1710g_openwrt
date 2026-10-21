@@ -1,0 +1,136 @@
+# files/etc/config/wireless — 默认无线（决策：三频全开、统一 SSID「K2P」、WPA2/WPA3 混合）
+# 密码为占位 123456789，强烈建议在 LuCI 改强（决策备注）。
+# MLO 通过 luci-app-mlo 管理（同 SSID 多频是 MLO 前提；EHT320 回程/802.11s 见 ROADMAP 漫游优化计划）。
+
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option phy 'phy0'
+	option radio '0'
+	option band '2g'
+	option htmode 'HE40'                   # HE40 为目标能力/上限；ACS 自动选宽，密集环境合规回退 20MHz，判读以 iw dev 为准（F32）
+	option channel 'auto'                   # 显式声明 auto，不依赖默认落 auto（F32）
+	option he_mu_beamformer '0'            # 07 天线报告：2.4G 波束成形增益仅 +1.33dB，MU-MIMO 默认关（naoki66 基线）
+	option country 'US'                    # 决策：US regdb（6GHz 全开；520 功率补丁）
+	option cell_density '0'
+	option disabled '0'
+
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ieee80211r '1'                  # F144：802.11r（FT）——同 SSID 多频漫游不重认证
+	option mobility_domain '6616'          # 社区默认 MD；多 AP 需一致（本机单 AP 无害）
+	option ft_over_ds '1'                  # Apple 惯用 FT-over-DS；仅 OTA 会退回全量 SAE（66 次认证失败实证）
+	option ssid 'K2P'
+	option encryption 'sae-mixed'          # WPA2/WPA3 混合
+	option key '123456789'                 # TODO 建议改强
+
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option phy 'phy0'
+	option radio '1'
+	option band '5g'
+	option channel '149'                   # 默认 UNII-3 80MHz：中国 5.8G 合法/国行终端兼容（issue #21 实机定位）
+	option htmode 'HE80'                   # 5G 80MHz；30dBm 需 mt76-0008（已默认）+ regdb 0521
+	option noscan '1'                       # 固定信道 149 非 DFS，关闭无谓邻区扫描（F33）
+	option country 'US'
+	option cell_density '0'
+	option disabled '0'
+
+config wifi-iface 'default_radio1'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	option ieee80211r '1'                  # F144：802.11r（FT）
+	option mobility_domain '6616'
+	option ft_over_ds '1'
+	option ssid 'K2P'
+	option encryption 'sae-mixed'
+	option max_inactivity '86400'          # 07 天线报告：5G 防周期清退（恩山 tid-8484444）
+	option disassoc_low_ack '0'
+	option key '123456789'                 # TODO 建议改强
+
+# 5G-only SSID：手动选择/排障通道（F41/issue #21）
+# 国行部分终端在 5.8G 仅支持 80MHz，对 ch149/HE160（中心 5815，覆盖 UNII-4 前段）
+# 可能直接过滤；本通道提供同加密的 5G 独立入口，便于二分复现与临时使用。
+config wifi-iface 'default_radio1_5g'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	option ieee80211r '1'                  # F144：802.11r（FT）
+	option mobility_domain '6616'
+	option ft_over_ds '1'
+	option ssid 'K2P-5G'
+	option encryption 'sae-mixed'
+	option max_inactivity '86400'
+	option disassoc_low_ack '0'
+	option key '123456789'                 # TODO 建议改强
+
+# 5G HE160 可选档（issue #21 实机：国行 iQOO Neo9 在 ch149/HE160 下直接拒绝关联，
+# HE80 下 psk2 与 sae-mixed 均可连；160MHz 仅对支持 5.8G 160MHz 的非国行终端开放，
+# 且覆盖 UNII-4 前段 5850–5895MHz，合规风险自担。取消注释以下配置并 reload 启用。）
+# config wifi-device 'radio1_he160'
+# 	option type 'mac80211'
+# 	option phy 'phy0'
+# 	option radio '1'
+# 	option band '5g'
+# 	option channel '149'
+# 	option htmode 'HE160'
+# 	option noscan '1'
+# 	option country 'US'
+# 	option cell_density '0'
+# 	option disabled '0'
+# config wifi-iface 'default_radio1_he160'
+# 	option device 'radio1_he160'
+# 	option network 'lan'
+# 	option mode 'ap'
+# 	option ssid 'K2P'
+# 	option encryption 'sae-mixed'
+# 	option key '123456789'
+
+# 5G HE160 DFS 档（国行终端想跑 160MHz 时使用；issue #21 备注）：
+# ch36/HE160 覆盖 5170–5330MHz（U-NII-1 + U-NII-2A），国行终端支持较好，但 regdb 下
+# 宽信道功率受 5250–5350 DFS 段限制为 24dBm（5150–5250 段为 29dBm，160MHz 取交集），
+# 且需要 DFS。追求 30dBm 请留在默认 HE80@149 或切换到上面的 HE160@149 高功率档。
+# 取消注释以下配置并 reload 启用。
+# config wifi-device 'radio1_he160_dfs'
+# 	option type 'mac80211'
+# 	option phy 'phy0'
+# 	option radio '1'
+# 	option band '5g'
+# 	option channel '36'
+# 	option htmode 'HE160'
+# 	option noscan '1'
+# 	option country 'US'
+# 	option cell_density '0'
+# 	option disabled '0'
+# config wifi-iface 'default_radio1_he160_dfs'
+# 	option device 'radio1_he160_dfs'
+# 	option network 'lan'
+# 	option mode 'ap'
+# 	option ssid 'K2P'
+# 	option encryption 'sae-mixed'
+# 	option key '123456789'
+
+config wifi-device 'radio2'
+	option type 'mac80211'
+	option phy 'phy0'
+	option radio '2'
+	option band '6g'
+	option channel '37'                    # 07 天线报告：低段 LPI 完整 EHT320 落点（中心 6105，全落在 5925-6425）
+	option htmode 'EHT320'                 # 6GHz 320MHz（EHT320；若驱动不支持回退 HE160——修复而不是降级：修到支持为止）
+	option noscan '1'                       # 固定信道 37 非 DFS，关闭无谓邻区扫描（F33）
+	option country 'US'
+	option cell_density '0'
+	option disabled '0'
+
+config wifi-iface 'default_radio2'
+	option device 'radio2'
+	option network 'lan'
+	option mode 'ap'
+	option ieee80211r '1'                  # F144：802.11r（FT）
+	option mobility_domain '6616'
+	option ft_over_ds '1'
+	option ssid 'K2P'
+	option encryption 'sae-mixed'
+	option key '123456789'                 # TODO 建议改强

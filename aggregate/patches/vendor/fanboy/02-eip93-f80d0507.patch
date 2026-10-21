@@ -1,0 +1,42 @@
+From f80d050779635b4200f907b1fed549aa8695a011 Mon Sep 17 00:00:00 2001
+From: Kenneth Kasilag <kenneth@kasilag.me>
+Date: Thu, 2 Apr 2026 06:21:32 +0000
+Subject: [PATCH] airoha: enable eip93 driver
+
+For the airoha target, the Inside Secure SafeXcel EIP93 driver is
+available as a backport on 6.12 and merged in mainline for 6.18.
+
+Enable the modules required to use this hardware accelerator.
+
+Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
+---
+ target/linux/airoha/an7581/target.mk | 2 +-
+ target/linux/airoha/an7583/target.mk | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/target/linux/airoha/an7581/target.mk b/target/linux/airoha/an7581/target.mk
+index 3d0cee97d4b6d1..bc101fb4e10a7c 100644
+--- a/target/linux/airoha/an7581/target.mk
++++ b/target/linux/airoha/an7581/target.mk
+@@ -6,7 +6,7 @@ KERNELNAME:=Image dtbs
+ FEATURES+=pwm
+ 
+ DEFAULT_PACKAGES += \
+-	airoha-en7581-npu-firmware uboot-envtools
++	airoha-en7581-npu-firmware uboot-envtools kmod-crypto-hw-eip93
+ 
+ define Target/Description
+ 	Build firmware images for Airoha an7581 ARM based boards.
+diff --git a/target/linux/airoha/an7583/target.mk b/target/linux/airoha/an7583/target.mk
+index ed3fc2481fc75d..88458b14b283f6 100644
+--- a/target/linux/airoha/an7583/target.mk
++++ b/target/linux/airoha/an7583/target.mk
+@@ -9,6 +9,8 @@ DEFAULT_PACKAGES += \
+ 	airoha-an7583-npu-firmware kmod-leds-gpio \
+ 	kmod-gpio-button-hotplug uboot-envtools
+ 
++DEFAULT_PACKAGES += kmod-crypto-hw-eip93
++
+ define Target/Description
+ 	Build firmware images for Airoha an7583 ARM based boards.
+ endef

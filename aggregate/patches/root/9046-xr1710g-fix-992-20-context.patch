@@ -1,0 +1,12 @@
+diff --git a/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch b/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
+index 1377acd..c49a070 100644
+--- a/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
++++ b/target/linux/airoha/patches-6.18/992-20-net-airoha-stability.patch
+@@ -179,6 +179,6 @@
+  /* RX queue to IRQ mapping: BIT(q) in IRQ(n) */
+ -#define RX_IRQ0_BANK_PIN_MASK			0x839f
+ +#define RX_IRQ0_BANK_PIN_MASK			0xbb9f
+- #define RX_IRQ1_BANK_PIN_MASK			0x7fe00000
++ #define RX_IRQ1_BANK_PIN_MASK			0xffe00000
+  #define RX_IRQ2_BANK_PIN_MASK			0x20
+  #define RX_IRQ3_BANK_PIN_MASK			0x40

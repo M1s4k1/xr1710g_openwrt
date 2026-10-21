@@ -1,0 +1,25 @@
+# Source: 07-antenna-improvement.md 附A.2 + regdb-0555 的 5G 部分（2026-08-20 切分为默认档）
+# Upstream: n/a（carried-only，不打算上游）
+# Reason: 默认档让 5G radio 可固定 UNII-3/4 160MHz@30dBm；555 的 UNII-4 扩展不再是 OC 专属。
+#         eeprom grp4 已由默认档 mt76-0008 解锁（0x27->0x2a），因此所有档位实际可达 30dBm。
+
+Default-tier regdb: extend US 5 GHz UNII-3 to UNII-4 with a 160 MHz wide
+rule at 30 dBm so radio1 can be pinned to channel 149 / HE160 in all build
+flavours.  This is the 5 GHz half of the old OC-only 0555 patch; the 6 GHz
+29 -> 30 dBm part stays in 0555 (OC tier).
+
+---
+--- a/db.txt
++++ b/db.txt
+@@ -2088,10 +2088,7 @@ country US: DFS-FCC
+ 	# requirements, we can extend the range by 5 MHz to make the kernel
+ 	# happy and be able to use channel 144.
+ 	(5470 - 5730 @ 160), (24), DFS
+-	(5730 - 5850 @ 80), (30), AUTO-BW
+-	# https://www.federalregister.gov/documents/2021/05/03/2021-08802/use-of-the-5850-5925-ghz-band
+-	# max. 33 dBm AP @ 20MHz, 36 dBm AP @ 40Mhz+, 6 dB less for clients
+-	(5850 - 5895 @ 40), (27), NO-OUTDOOR, AUTO-BW, NO-IR
++	(5730 - 5895 @ 160), (30), AUTO-BW
+ 	# 6g band
+ 	# https://www.federalregister.gov/documents/2020/05/26/2020-11236/unlicensed-use-of-the-6ghz-band
+ 	(5925 - 7125 @ 320), (29), NO-OUTDOOR

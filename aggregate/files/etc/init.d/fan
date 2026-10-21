@@ -1,0 +1,138 @@
+#!/bin/sh /etc/rc.common
+# fan — XR1710G 风扇温控（单控制器 + 动态探测 + 迟滞/最低稳定档/失效满速兜底）
+# 决策：温控默认开启；曲线来自 UCI /etc/config/fan（luci-app-w1700k-fancontrol），
+#       缺省使用 balanced 曲线 40/50/60/70/80℃ → PWM 54/69/95/199/255。
+# 说明：本脚本是 pwm1 唯一写入者；LuCI 前端/RPC 只写 UCI 并 /etc/init.d/fan reload。
+#       A4 将原 files/fan 与 9017 fancontrol 的 /etc/init.d/fan 合并到此。
+
+START=99
+STOP=10
+
+HWMON=""
+PWM=""
+MIN_STABLE_PWM=54
+HYSTERESIS=5
+LOOP_DELAY=10
+
+find_hwmon() {
+for d in /sys/class/hwmon/hwmon*; do
+[ -d "$d" ] || continue
+n="$(cat "$d/name" 2>/dev/null)"
+case "$n" in
+nct7802|nct7511*|nct75*)
+[ -f "$d/pwm1" ] && { HWMON="$d"; return 0; }
+;;
+esac
+done
+# 退化为第一个同时提供 temp1_input 与 pwm1 的 hwmon
+for d in /sys/class/hwmon/hwmon*; do
+[ -f "$d/temp1_input" ] && [ -f "$d/pwm1" ] && { HWMON="$d"; return 0; }
+done
+return 1
+}
+
+curve_pwm() {
+local t="$1" preset="$2"
+local p1_temp p2_temp p3_temp p4_temp p5_temp
+local p1_pwm p2_pwm p3_pwm p4_pwm p5_pwm
+
+p1_temp=$(uci -q get fan.${preset}.point1_temp 2>/dev/null || echo 40)
+p2_temp=$(uci -q get fan.${preset}.point2_temp 2>/dev/null || echo 50)
+p3_temp=$(uci -q get fan.${preset}.point3_temp 2>/dev/null || echo 60)
+p4_temp=$(uci -q get fan.${preset}.point4_temp 2>/dev/null || echo 70)
+p5_temp=$(uci -q get fan.${preset}.point5_temp 2>/dev/null || echo 80)
+p1_pwm=$(uci -q get fan.${preset}.point1_pwm 2>/dev/null || echo 54)
+p2_pwm=$(uci -q get fan.${preset}.point2_pwm 2>/dev/null || echo 69)
+p3_pwm=$(uci -q get fan.${preset}.point3_pwm 2>/dev/null || echo 95)
+p4_pwm=$(uci -q get fan.${preset}.point4_pwm 2>/dev/null || echo 199)
+p5_pwm=$(uci -q get fan.${preset}.point5_pwm 2>/dev/null || echo 255)
+
+# 5 点线性插值；低于首个温度点保持最低档，高于末点满速
+if [ "$t" -le "$p1_temp" ]; then
+echo "$p1_pwm"; return
+elif [ "$t" -ge "$p5_temp" ]; then
+echo "$p5_pwm"; return
+fi
+if [ "$t" -le "$p2_temp" ]; then
+echo $(( p1_pwm + (p2_pwm - p1_pwm) * (t - p1_temp) / (p2_temp - p1_temp) )); return
+elif [ "$t" -le "$p3_temp" ]; then
+echo $(( p2_pwm + (p3_pwm - p2_pwm) * (t - p2_temp) / (p3_temp - p2_temp) )); return
+elif [ "$t" -le "$p4_temp" ]; then
+echo $(( p3_pwm + (p4_pwm - p3_pwm) * (t - p3_temp) / (p4_temp - p3_temp) )); return
+else
+echo $(( p4_pwm + (p5_pwm - p4_pwm) * (t - p4_temp) / (p5_temp - p4_temp) )); return
+fi
+}
+
+read_config() {
+MODE=$(uci -q get fan.settings.mode 2>/dev/null || echo auto)
+MANUAL_PWM=$(uci -q get fan.settings.manual_pwm 2>/dev/null || echo 127)
+PRESET=$(uci -q get fan.settings.curve_preset 2>/dev/null || echo balanced)
+case "$PRESET" in
+quiet|balanced|performance|custom) ;;
+*) PRESET="balanced" ;;
+esac
+}
+
+start() {
+local PIDF=/var/run/fan.pid
+if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+logger -t fan "风扇温控已在运行"
+return 0
+fi
+rm -f "$PIDF"
+find_hwmon || { logger -t fan "未找到风扇控制器（无 pwm1/temp1_input），风扇保持自动模式"; return 1; }
+PWM="$HWMON/pwm1"
+echo 1 > "${PWM}_enable" 2>/dev/null || true
+
+# shellcheck disable=SC2016
+(
+while :; do
+read_config
+if [ "$MODE" = "manual" ]; then
+p="$MANUAL_PWM"
+case "$p" in ''|*[!0-9]*) p=127 ;; esac
+else
+tmp="$(cat "$HWMON/temp1_input" 2>/dev/null)" || tmp=""
+if [ -z "$tmp" ]; then
+# 失效兜底：传感器读不到就满速，宁吵勿烧
+p=255
+logger -t fan "温度传感器读取失败，风扇满速兜底"
+else
+t=$(( ${tmp:-40000} / 1000 ))
+p=$(curve_pwm "$t" "$PRESET")
+case "$p" in ''|*[!0-9]*) p=255 ;; esac
+# 最低稳定档：自动曲线非零输出不得低于 54（对应约 770RPM 的最低稳定转速）
+[ "$p" -gt 0 ] && [ "$p" -lt "$MIN_STABLE_PWM" ] && p="$MIN_STABLE_PWM"
+# 迟滞：目标与当前差值小于阈值时保持当前 PWM，避免温度抖动导致风扇反复加减速
+cur="$(cat "$PWM" 2>/dev/null)" || cur=""
+case "$cur" in ''|*[!0-9]*) cur=$p ;; esac
+if [ "$p" -gt "$cur" ] && [ $((p - cur)) -lt "$HYSTERESIS" ]; then p="$cur"; fi
+if [ "$p" -lt "$cur" ] && [ $((cur - p)) -lt "$HYSTERESIS" ]; then p="$cur"; fi
+fi
+fi
+[ "$p" -ge 0 ] && [ "$p" -le 255 ] && echo "$p" > "$PWM" 2>/dev/null || true
+sleep "$LOOP_DELAY"
+done
+) &
+echo $! > "$PIDF"
+logger -t fan "风扇曲线已接管：传感器=$HWMON（$(cat "$HWMON/name" 2>/dev/null)）"
+}
+
+stop() {
+local PIDF=/var/run/fan.pid
+[ -f "$PIDF" ] && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+rm -f "$PIDF"
+# 恢复硬件自动温控
+if [ -n "$PWM" ] && [ -f "${PWM}_enable" ]; then
+echo 2 > "${PWM}_enable" 2>/dev/null || true
+else
+find_hwmon && [ -n "$HWMON" ] && echo 2 > "$HWMON/pwm1_enable" 2>/dev/null || true
+fi
+logger -t fan "风扇控制停止，交还自动模式"
+}
+
+reload() {
+stop
+start
+}

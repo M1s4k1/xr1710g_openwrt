@@ -1,0 +1,44 @@
+# Source: YYH2913/openwrt mt76/0158（Yanghan Ye, 2026-08-07）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a
+# Reason: ① MT76 NPU RX 环**支持全部描述符被填充**（Airoha SDK 语义），当前
+#   `while (q->queued < q->ndesc - 1)` 预留一个空描述符，且 dequeue 先推进 q->tail 再 refill，
+#   会让"已被消费、page 已归 skb"的槽位对 NPU 可见；② 部分补页时会把超出实际补齐量的索引
+#   发布出去。修法：满环填充；把"补到哪"的发布点从 dequeue 移到 refill（dma_wmb + Q_WRITE(q->head)），
+#   dequeue 删掉 Q_WRITE(q->tail)。
+# ⚠ 与本仓 mt76-0011（NPU RX descriptor ownership）共存：0011 保留 ndesc-1 预留、只改 refill
+#   写序。本补丁在 0011 之上可干净应用；**满填充后的不变量需实机高负载压测**（判据：
+#   HOSTADPT_API_Q_FULL 不增长、head/tail 不漂移、无 dcache_inval_poc oops）。
+# 实证：对 be5ce791 + 本仓 mt76 内层（含 0011）按序 fuzz=0。
+diff --git a/npu.c b/npu.c
+index 91b7aca2..420f3752 100644
+--- a/npu.c
++++ b/npu.c
+@@ -18,7 +18,7 @@ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
+ {
+ 	int nframes = 0;
+ 
+-	while (q->queued < q->ndesc - 1) {
++	while (q->queued < q->ndesc) {
+ 		struct airoha_npu_rx_dma_desc *desc = (void *)q->desc;
+ 		struct mt76_queue_entry *e = &q->entry[q->head];
+ 		struct page *page;
+@@ -48,6 +48,11 @@ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
+ 		nframes++;
+ 	}
+ 
++	if (nframes) {
++		dma_wmb();
++		Q_WRITE(q, dma_idx, q->head);
++	}
++
+ 	return nframes;
+ }
+ 
+@@ -124,7 +129,6 @@ static struct sk_buff *mt76_npu_dequeue(struct mt76_dev *dev,
+ 	}
+ 	q->tail = index;
+ 	q->queued -= i;
+-	Q_WRITE(q, dma_idx, q->tail);
+ 
+ 	return skb;
+ }

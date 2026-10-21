@@ -1,0 +1,14 @@
+diff --git a/package/base-files/files/etc/init.d/led b/package/base-files/files/etc/init.d/led
+index 79fdd45..5aab9c4 100644
+--- a/package/base-files/files/etc/init.d/led
++++ b/package/base-files/files/etc/init.d/led
+@@ -131,7 +131,8 @@ load_led() {
+ 					[ -e "/sys/class/leds/${sysfs}/$m" ] && \
+ 						echo 1 > /sys/class/leds/${sysfs}/$m
+ 				done
+-				echo $interval > /sys/class/leds/${sysfs}/interval 2>/dev/null
++				[ "$(cat /sys/class/leds/${sysfs}/offloaded 2>/dev/null)" = "1" ] || \
++					echo $interval > /sys/class/leds/${sysfs}/interval 2>/dev/null || true
+ 			}
+ 			;;
+ 

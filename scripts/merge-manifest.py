@@ -8,6 +8,7 @@ rules 语法（每行一条；`#` 开头为注释；行尾 `# 理由: …` 必�
     - <path>                            停用 → 改写为 `#DISABLED <path> <dest>`
     ^ <path>                            提档 → 删 `#EXP `/`#OC ` 前缀，变活动行
     + <path> <dest> [after <anchor>]    追加本地补丁（dest = ROOT | 目标目录）
+    ! <old> <new>                       用 new 替换活动的 old，继承档位、目标目录和位置
 
 语义对齐（与上游 apply-patches.sh / gen-order.py 严格一致）：
     MANIFEST 无前缀        → default（stock/experimental 两档都应用）
@@ -32,7 +33,7 @@ import sys
 
 PREFIX = (("#DISABLED ", "disabled"), ("#EXP ", "experimental"), ("#OC ", "oc"))
 
-RULE_RE = re.compile(r"^\s*([\-\^\+])\s+(\S+\.patch)\s*(.*)$")
+RULE_RE = re.compile(r"^\s*([-\^+!])\s+(\S+\.patch)\s*(.*)$")
 REASON_RE = re.compile(r"#\s*理由\s*[:：]\s*(.*)$")
 
 
@@ -56,7 +57,7 @@ def classify(raw):
 
 
 def parse_rules(path):
-    rules = {"disable": [], "promote": [], "append": []}
+    rules = {"disable": [], "promote": [], "append": [], "replace": []}
     with open(path, encoding="utf-8") as f:
         for ln, raw in enumerate(f, 1):
             s = raw.rstrip("\n")
@@ -74,6 +75,12 @@ def parse_rules(path):
                 rules["disable"].append((patch, reason))
             elif op == "^":
                 rules["promote"].append((patch, reason))
+            elif op == "!":
+                body = rest.split("#", 1)[0].strip().split()
+                if len(body) != 1 or not body[0].endswith(".patch"):
+                    sys.exit(f"✗ 替换规则必须为 `! <旧补丁> <新补丁>`（{path}:{ln}）：{s!r}")
+                new_patch = body[0]
+                rules["replace"].append((patch, new_patch, reason, ln))
             else:
                 body = rest.split("#")[0].strip()
                 toks = body.split()
@@ -144,12 +151,42 @@ def main():
         e["tier"] = "default"
         e["_promote_note"] = f"# [local] 提档 {old}→default：{reason}"
 
+    # ③ 替换：new 继承 old 的档位、目标目录和 MANIFEST 位置
+    replaced = set()
+    for old_patch, new_patch, reason, rule_ln in rules["replace"]:
+        if old_patch in replaced or new_patch in replaced:
+            errors.append(f"替换规则重复（第 {rule_ln} 行）：{old_patch} → {new_patch}")
+            continue
+        if old_patch not in info:
+            errors.append(f"替换旧项不在当前活动 MANIFEST（第 {rule_ln} 行）：{old_patch}")
+            continue
+        if new_patch in info:
+            errors.append(f"替换新项已在 MANIFEST 中（第 {rule_ln} 行）：{new_patch}")
+            continue
+        new_path = os.path.join(os.path.dirname(os.path.dirname(args.manifest)), new_patch)
+        if not os.path.isfile(new_path):
+            errors.append(f"替换新项文件不存在（第 {rule_ln} 行）：{new_patch}")
+            continue
+        e = info[old_patch]
+        if e["tier"] == "disabled":
+            errors.append(f"替换旧项不是活动条目（第 {rule_ln} 行）：{old_patch}")
+            continue
+        prefix = {"default": "", "experimental": "#EXP ", "oc": "#OC "}.get(e["tier"])
+        if prefix is None:
+            errors.append(f"替换旧项档位非法（第 {rule_ln} 行）：{old_patch} [{e['tier']}]" )
+            continue
+        out[e["idx"]] = f"{prefix}{new_patch} {e['dest']}"
+        del info[old_patch]
+        info[new_patch] = {"idx": e["idx"], "tier": e["tier"], "dest": e["dest"]}
+        replaced.update((old_patch, new_patch))
+        info[new_patch]["_replace_note"] = f"# [local] 替换 {old_patch} → {new_patch}：{reason}"
+
     if errors:
         for x in errors:
             print(f"✗ {x}", file=sys.stderr)
         return 1
 
-    # ③ 追加（先收集，最后统一插入，避免索引漂移）
+    # ④ 追加（先收集，最后统一插入，避免索引漂移）
     adds = []  # (插入位置, 注释行, 条目行)
     for patch, dest, after, reason in rules["append"]:
         if patch in info:
@@ -186,7 +223,8 @@ def main():
             final.append(note)
             final.append(entry)
         c = classify(raw)
-        note = info.get(c[1], {}).pop("_promote_note", None) if c else None
+        entry_info = info.get(c[1], {}) if c else {}
+        note = entry_info.pop("_promote_note", None) or entry_info.pop("_replace_note", None)
         if note:
             final.append(note)
         final.append(raw)

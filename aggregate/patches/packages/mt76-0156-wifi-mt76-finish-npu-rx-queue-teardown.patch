@@ -1,0 +1,191 @@
+# Source: YYH2913/openwrt mt76/0156（Yanghan Ye, 2026-08-07）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a
+# Reason: 完成 NPU RX queue teardown——mt76_npu_rx_queue_init() 的 error path 改为分阶段
+#   回滚（先解 IRQ、再清 page_pool/queue、最后 NAPI）；mt76_npu_irq_handler() 开头加
+#   registered 门；mt76_npu_rx_queues_deinit() 重写为单循环 + IRQ/NAPI 分阶段。
+# 注意：0156 引入的 q->npu_napi_registered 在 0161 中被 dev->napi_registered bitmap 取代
+#   ——本仓按 0153 → 0156 → 0161 全序落地，最终态即 bitmap（无中间态残留）。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序按序 fuzz=0。
+diff --git a/mt76.h b/mt76.h
+index b824d0ea..184c5508 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -260,6 +260,7 @@ struct mt76_queue {
+ 	int npu_irq;
+ 	bool stopped;
+ 	bool blocked;
++	bool npu_napi_registered;
+ 	bool npu_irq_registered;
+ 
+ 	u8 buf_offset;
+diff --git a/npu.c b/npu.c
+index 6677ed69..91b7aca2 100644
+--- a/npu.c
++++ b/npu.c
+@@ -218,6 +218,9 @@ static irqreturn_t mt76_npu_irq_handler(int irq, void *q_instance)
+ 	struct airoha_npu *npu;
+ 	u32 status;
+ 
++	if (!READ_ONCE(q->npu_irq_registered))
++		return IRQ_HANDLED;
++
+ 	rcu_read_lock();
+ 
+ 	npu = rcu_dereference(dev->mmio.npu);
+@@ -309,7 +312,7 @@ int mt76_npu_rx_queue_init(struct mt76_dev *dev, struct mt76_queue *q)
+ 	err = dev->queue_ops->alloc(dev, q, 0, size,
+ 				    MT76_NPU_RX_BUF_SIZE, 0);
+ 	if (err)
+-		goto out;
++		goto error_queue;
+ 
+ 	name = devm_kasprintf(dev->dev, GFP_KERNEL, "mt76-npu.%d", index);
+ 	if (!name) {
+@@ -318,25 +321,34 @@ int mt76_npu_rx_queue_init(struct mt76_dev *dev, struct mt76_queue *q)
+ 	}
+ 
+ 	netif_napi_add(dev->napi_dev, &dev->napi[qid], mt76_npu_rx_poll);
++	WRITE_ONCE(q->npu_napi_registered, true);
+ 	mt76_npu_fill_rx_queue(dev, q);
+ 	napi_enable(&dev->napi[qid]);
+ 
++	q->npu_irq = irq;
++	WRITE_ONCE(q->npu_irq_registered, true);
+ 	err = devm_request_irq(dev->dev, irq, mt76_npu_irq_handler,
+ 			       IRQF_SHARED, name, q);
+ 	if (err) {
+-		napi_disable(&dev->napi[qid]);
+-		netif_napi_del(&dev->napi[qid]);
++		WRITE_ONCE(q->npu_irq_registered, false);
++		q->npu_irq = -1;
+ 		goto error_queue;
+ 	}
+ 
+-	q->npu_irq = irq;
+-	WRITE_ONCE(q->npu_irq_registered, true);
+ 	goto out;
+ 
+ error_queue:
+-	mt76_npu_queue_cleanup(dev, q);
+-	page_pool_destroy(q->page_pool);
+-	q->page_pool = NULL;
++	if (READ_ONCE(q->npu_napi_registered)) {
++		napi_disable(&dev->napi[qid]);
++		netif_napi_del(&dev->napi[qid]);
++		WRITE_ONCE(q->npu_napi_registered, false);
++	}
++	if (q->page_pool) {
++		mt76_npu_queue_cleanup(dev, q);
++		page_pool_destroy(q->page_pool);
++		q->page_pool = NULL;
++	}
++	q->npu_irq = -1;
+ 	q->ndesc = 0;
+ out:
+ 	mutex_unlock(&dev->mutex);
+@@ -347,8 +359,6 @@ EXPORT_SYMBOL_GPL(mt76_npu_rx_queue_init);
+ 
+ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev)
+ {
+-	bool registered[2] = {};
+-	int irqs[2] = {};
+ 	struct airoha_npu *npu;
+ 	int i;
+ 
+@@ -356,53 +366,45 @@ void mt76_npu_rx_queues_deinit(struct mt76_dev *dev)
+ 	npu = rcu_dereference_protected(dev->mmio.npu,
+ 					lockdep_is_held(&dev->mutex));
+ 
+-	for (i = 0; i < ARRAY_SIZE(registered); i++) {
+-		struct mt76_queue *q = &dev->q_rx[MT_RXQ_NPU0 + i];
++	for (i = MT_RXQ_NPU0; i <= MT_RXQ_NPU1; i++) {
++		struct mt76_queue *q = &dev->q_rx[i];
++		bool irq_registered, napi_registered;
++		int index = i - MT_RXQ_NPU0;
+ 		u32 status;
+ 
+-		if (!READ_ONCE(q->npu_irq_registered))
+-			continue;
+-
+-		registered[i] = true;
+-		irqs[i] = q->npu_irq;
+-		WRITE_ONCE(q->npu_irq_registered, false);
+-
+-		if (!npu)
+-			continue;
+-
+-		status = airoha_npu_wlan_get_irq_status(npu, i);
+-		airoha_npu_wlan_set_irq_status(npu, status);
+-		airoha_npu_wlan_disable_irq(npu, i);
+-	}
+-	mutex_unlock(&dev->mutex);
+-
+-	for (i = 0; i < ARRAY_SIZE(registered); i++) {
+-		struct mt76_queue *q = &dev->q_rx[MT_RXQ_NPU0 + i];
+-
+-		if (!registered[i])
+-			continue;
+-
+-		devm_free_irq(dev->dev, irqs[i], q);
+-		napi_synchronize(&dev->napi[MT_RXQ_NPU0 + i]);
+-	}
+-
+-	mutex_lock(&dev->mutex);
+-	npu = rcu_dereference_protected(dev->mmio.npu,
+-					lockdep_is_held(&dev->mutex));
+-	for (i = 0; i < ARRAY_SIZE(registered); i++) {
+-		struct mt76_queue *q = &dev->q_rx[MT_RXQ_NPU0 + i];
+-		u32 status;
++		irq_registered = READ_ONCE(q->npu_irq_registered);
++		napi_registered = READ_ONCE(q->npu_napi_registered);
++		if (irq_registered) {
++			WRITE_ONCE(q->npu_irq_registered, false);
++			if (npu) {
++				status = airoha_npu_wlan_get_irq_status(npu, index);
++				airoha_npu_wlan_set_irq_status(npu, status);
++				airoha_npu_wlan_disable_irq(npu, index);
++			}
++
++			devm_free_irq(dev->dev, q->npu_irq, q);
++			q->npu_irq = -1;
++		}
+ 
+-		if (!registered[i])
+-			continue;
++		if (napi_registered) {
++			napi_disable(&dev->napi[i]);
++			netif_napi_del(&dev->napi[i]);
++			WRITE_ONCE(q->npu_napi_registered, false);
++		}
+ 
+-		q->npu_irq = -1;
+-		if (!npu)
+-			continue;
++		/* A poll already completing can race the first IRQ mask. */
++		if (npu && (irq_registered || napi_registered)) {
++			status = airoha_npu_wlan_get_irq_status(npu, index);
++			airoha_npu_wlan_set_irq_status(npu, status);
++			airoha_npu_wlan_disable_irq(npu, index);
++		}
+ 
+-		status = airoha_npu_wlan_get_irq_status(npu, i);
+-		airoha_npu_wlan_set_irq_status(npu, status);
+-		airoha_npu_wlan_disable_irq(npu, i);
++		if (q->page_pool) {
++			mt76_npu_queue_cleanup(dev, q);
++			page_pool_destroy(q->page_pool);
++			q->page_pool = NULL;
++		}
++		q->ndesc = 0;
+ 	}
+ 	mutex_unlock(&dev->mutex);
+ }
+@@ -647,8 +649,6 @@ void mt76_npu_deinit(struct mt76_dev *dev)
+ 	mutex_unlock(&dev->mutex);
+ 	synchronize_rcu();
+ 
+-	mt76_npu_queue_cleanup(dev, &dev->q_rx[MT_RXQ_NPU0]);
+-	mt76_npu_queue_cleanup(dev, &dev->q_rx[MT_RXQ_NPU1]);
+ 	dev->dma_dev = dev->dev;
+ 
+ 	if (npu)

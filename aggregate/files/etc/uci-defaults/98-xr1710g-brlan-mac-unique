@@ -1,0 +1,139 @@
+#!/bin/sh
+# XR1710G: 给 br-lan 派生唯一 MAC——仅在它**当前与成员口冲突**时才动手（2026-09-12 P2，F117）。
+#
+# 为什么（症状/根因链，**已实机复现 2026-09-12 / stock r0-f36067d**）：
+#   files/etc/config/network 的 `config device 'br-lan'` 只声明 `list ports`，**没有 macaddr**；
+#   内核建桥时 br-lan 会从**第一个成员口**继承 MAC，于是 br-lan 的地址与第一成员口
+#   （实机 = lan1，10G-1）**逐字节相同**（实测均为 00:58:28:d7:44:5d）。桥/PPE(hardware flow offload)路径下，
+#   "目的 MAC 属于本机"的判定会被这个重复地址带偏：发往路由器自身（管理面 192.168.123.1）的
+#   帧在 L2 上看起来就是从 10G 成员口进来又原地转发的本地流量，被硬件卸载/FDB 路径吞掉
+#   → 10G WAN 与 10G LAN 同时插上时 LuCI/管理页打不开（上网仍正常），拔 WAN 也不恢复，
+#   必须换到 1G 口才能进管理页。同族第二症状：lan2 单独接主机拿不到 DHCP。
+#   社区三源独立报告（论坛 t/247242 #167、恩山 8484725 #23188342、naoki66 issue #17）
+#   一致结论：**给 br-lan 分配唯一 MAC 后恢复正常**。
+#
+# 实机现状（stock r0-f36067d，2026-09-12 只读复核，见 docs/FIXES.md F119）：
+#   `ip -br link`：br-lan == lan1 == 00:58:28:d7:44:5d；br-lan/brif = lan1 lan2 lan3 phy0.{0,1,2}-ap*
+#   （lan1 为第一成员口）；板级 DTS `9001` 里 **`&gdm1`(lan1) 与 `&gdm4`(lan2) 都取 `<&lan_mac 0>`**
+#   （gdm2 取 `<&wan_mac 0>`，Wi-Fi 三频取 `<&lan_mac 1/2/3>`；2026-09-13 F145 逐行复核更正）
+#
+# ⚠ 本脚本是"检测到冲突才迁移"的安全网，**不是无条件改写**，且默认 MAC 与 DTS 一律不动
+#   （避免影响所有镜像）。实机判据见 docs/FIXES.md F119：
+#     ① 10G WAN + 10G LAN 同插时管理页可访问；
+#     ② `ip -br link` 显示 br-lan 与 lan1/lan2 的 MAC 互不相同；
+#     ③ lan2 单独接主机能拿到 DHCP。
+#   ⚠ 应用后 br-lan MAC 变更 → 桥重建、DHCP/邻居缓存失效，需重连一次（属预期）。
+#
+# 口径：
+#   a) 用户已显式设置 `network.@device[br-lan].macaddr` → 一律不动（保留用户自定义值）。
+#   b) 只在 br-lan 现有 MAC **与某个成员口逐字节相同**时才动手；
+#      BR-LAN 未 up / 无 MAC 时（首启早期）视为冲突（此时它会继承成员口 MAC）。
+#   c) 派生规则（确定性、纯 shell、本地管理地址）：
+#        基 = 第一个 MAC 可读的成员口（正常 = lan1，10G-1）
+#        前 5 字节原样保留（**OUI 00:58:28 = Gemtek 不变**，人工一眼能认出是本机同厂口）
+#        第 6 字节从 **0x02** 起试，取第一个**不等于任何成员口 MAC**的值（最多试 16 个）
+#        —— 末字节 0x02 同时使整条地址 bit1=1（本地管理地址）；OUI 保留，细节见步骤 c 注释。
+#   d) 写 `network.@device[<idx>].macaddr` + `uci commit network`，并记 logger。
+#   e) 幂等：写入后 br-lan 与所有成员口都不再相同 → 第二次运行走 b) 直接 exit 0（零写入、零 commit）。
+#   f) POSIX sh（BusyBox ash）兼容；macaddr 缺省时本脚本不创建该 option（只在冲突时补）。
+#   g) 失败一律 exit 0：迁移脚本红脸会阻断 /etc/init.d/boot 里后续 uci-defaults 执行。
+
+board="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ -n "$board" ] || board="$(board_name 2>/dev/null)"
+[ "$board" = 'gemtek,xr1710g-ubi' ] || exit 0
+
+# 只枚举 device 段（名字里有 `@`，需先转义，否则 uci 会当成段类型语法）
+brlan_idx=""
+i=0
+while :; do
+	sec="$(uci -q show network 2>/dev/null | sed -n "s/^network\.\(@device\[$i\]\)=.*/\1/p")"
+	[ -n "$sec" ] || break
+	if [ "$(uci -q get "network.${sec}.name" 2>/dev/null)" = 'br-lan' ]; then
+		brlan_idx="$i"
+		break
+	fi
+	i=$((i + 1))
+done
+[ -n "$brlan_idx" ] || exit 0
+
+# a) 用户已显式设过 MAC → 不动
+[ -z "$(uci -q get "network.@device[$brlan_idx].macaddr" 2>/dev/null)" ] || exit 0
+
+# br-lan 当前 MAC（sysfs 为准；首启早期接口可能还不存在）
+mac_brlan="$(cat /sys/class/net/br-lan/address 2>/dev/null || true)"
+if [ -z "$mac_brlan" ]; then
+	mac_brlan="$(ip -o link show br-lan 2>/dev/null \
+		| awk -F'/link/ether ' '/link\/ether/ {split($2, a, " "); print a[1]; exit}')"
+fi
+
+# 成员口清单：uci 的 ports 为准，另并上"内核里现在真的有 lan1/lan2"的（首启 uci 尚未生效时兜底）
+members="$(uci -q get "network.@device[$brlan_idx].ports" 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)"
+for m in lan1 lan2; do
+	# 以"MAC 可读"为准（等价于接口存在，且后续比对必然用得上）
+	[ -n "$(cat "/sys/class/net/$m/address" 2>/dev/null || true)" ] || continue
+	if printf '%s\n' "$members" | grep -qx "$m"; then
+		continue
+	fi
+	members="$(printf '%s\n%s\n' "$members" "$m" | grep -v '^$')"
+done
+[ -n "$members" ] || exit 0
+
+# b) 逐个成员口比对；只有冲突才动手
+conflict=0
+first_mac=""
+for m in $members; do
+	mmac="$(cat "/sys/class/net/$m/address" 2>/dev/null || true)"
+	[ -n "$mmac" ] || continue
+	[ -n "$first_mac" ] || first_mac="$mmac"
+	[ "$mmac" = "$mac_brlan" ] && conflict=1
+done
+# br-lan 还没有 MAC（首启早期）→ 建桥后必然继承第一个成员口 → 按冲突处理
+[ -n "$mac_brlan" ] || conflict=1
+[ "$conflict" = '1' ] || exit 0
+[ -n "$first_mac" ] || exit 0
+
+# c) 派生：前 5 字节取基准口（OUI 不变），第 6 字节从 0x02 起找不冲突值
+#
+#   口径说明（社区三源修法一致，本仓采纳）：
+#     - **不动 OUI**：lan1 是 `00:58:28:xx:xx:xx`（Gemtek 注册 OUI，首八位组的 bit0=0
+#       → 全局唯一地址）。若把首八位组改成 0x02，得到的是 **02:58:28:...**：OUI 换成未分配的
+#       02:58:28，厂商识别 / 交换机 MAC 表 / DHCP 静态租约全部更难读，而唯一性并不因此变强
+#       → 净损失，故不采纳（任务书里"置位首个八位组 bit1"的括号写法与末字节方案是两种写法，
+#       目的相同：让 br-lan 唯一；这里选**保留 OUI** 的那种）。
+#     - **末字节从 0x02 起试**：这只是"从 2 开始的第一个候选值"，不承担任何 802 语义。
+#       顺带的性质：末字节 0x02 使整条地址的 bit1=1 → 该地址是**本地管理地址**（locally
+#       administered）。对 br-lan 这类软件桥接口正合适——它本来就不该占用 OUI 的全局唯一空间。
+#     - **唯一性判据**是 br-lan ≠ 任何成员口；本脚本逐个成员口比对，最多试 16 个末字节值。
+base="$(printf '%s' "$first_mac" | tr 'A-Z' 'a-z')"
+case "$base" in
+??:??:??:??:??:??) ;;
+*) exit 0 ;;
+esac
+prefix="${base%:*}"            # 前 5 字节 = 基准口前 5 字节（Gemtek OUI 00:58:28 不动）
+
+cand_v=2
+tries=0
+newmac=""
+while [ "$tries" -lt 16 ]; do
+	cand="$(printf '%s:%02x' "$prefix" "$cand_v")"
+	taken=0
+	for m in $members; do
+		if [ "$(cat "/sys/class/net/$m/address" 2>/dev/null || true)" = "$cand" ]; then
+			taken=1
+			break
+		fi
+	done
+	if [ "$taken" = '0' ]; then
+		newmac="$cand"
+		break
+	fi
+	cand_v=$((cand_v + 1))
+	tries=$((tries + 1))
+done
+[ -n "$newmac" ] || exit 0
+
+# d) 落盘 + 记账
+uci -q set "network.@device[$brlan_idx].macaddr=$newmac" || exit 0
+uci -q commit network || exit 0
+logger -t xr1710g-brlan "br-lan MAC was shared with a 10G member port (was $mac_brlan); set $newmac (device[$brlan_idx])"
+exit 0

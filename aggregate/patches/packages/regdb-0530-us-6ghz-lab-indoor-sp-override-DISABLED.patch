@@ -1,0 +1,24 @@
+# Source: 重建（2026-08-21）：0530 原 hunk 上下文含 5850-5895@40 行，0521 已删除该行；
+#   按「500→0510→0520→0521 应用后」状态重建（仅 6GHz 29→36dBm 实验室 SP）。
+#   2026-08-22 与 integration e88fbe28 530 语义一致，上下文不同系 0521 前置所致。
+# Upstream: n/a（carried-only，不打算上游）
+# Reason: 6GHz 实验室 SP 软件顶盖 29→36dBm；默认停用（非真 AFC）。
+
+Raise the local US 6 GHz software cap for lab-only indoor standard-power tests.
+
+This is not a real AFC implementation. It only lifts the legacy regdb ceiling
+used by this local build so the driver is not capped at the earlier 29 dBm
+LPI approximation. Keep NO-OUTDOOR in place and pair this with an indoor
+standard-power AP type on the hostapd side.
+---
+--- a/db.txt
++++ b/db.txt
+@@ -2091,7 +2091,7 @@
+ 	(5730 - 5895 @ 160), (30), AUTO-BW
+ 	# 6g band
+ 	# https://www.federalregister.gov/documents/2020/05/26/2020-11236/unlicensed-use-of-the-6ghz-band
+-	(5925 - 7125 @ 320), (29), NO-OUTDOOR
++	(5925 - 7125 @ 320), (36), NO-OUTDOOR
+ 	# 60g band
+ 	# reference: section IV-D https://docs.fcc.gov/public/attachments/FCC-16-89A1.pdf
+ 	# channels 1-6 EIRP=40dBm(43dBm peak)

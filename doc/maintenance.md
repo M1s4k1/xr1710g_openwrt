@@ -5,17 +5,15 @@
 
 ## 1.5 长期维护：监控上游 + 逐条裁决
 
-本仓库是 genshanxinli 的 fork。上游更新时，**不是无脑跟随，而是逐条裁决**。
+本项目把 aggregate 作为 `aggregate/` 内置冻结快照维护。外部仓库只用于记录来源历史；构建过程不自动 fetch 或更新。若要更新，必须人工复制新快照，比较 `MANIFEST`、`ORDER`、补丁 hash 和档位选择集，再通过审计后提交。
 
 ### 工作流
 
 ```bash
-scripts/check-upstream.sh              # ① 看上游更新了什么、有无影响
-# ② 按 ../upstream-decisions.md 的模板逐条登记裁决
-scripts/check-upstream.sh --baseline   # ③ 裁决完毕后，把当前上游 tip 记为已裁决基线
+scripts/check-upstream.sh              # 检查内置快照；默认不联网
+# 显式传入外部 Git aggregate 时，才执行外部来源对账
+scripts/check-upstream.sh --baseline   # 记录内置快照基线
 ```
-
-日常只跑 ①，它会 fetch 上游并输出：提交清单 / MANIFEST 增删 / 影响判定 / 账本状态。
 
 ### 退出码（可用于告警）
 

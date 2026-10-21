@@ -1,0 +1,25 @@
+# Source: hurryman2212/OpenW1700k-test @offload-oc 9999-12（SOE 节点）的 target 树载体版（P27 坑 71）
+# Reason: 原 9999-12 内层补丁目标是内核树 arch/arm64/boot/dts/airoha/en7581.dtsi，而本板固件编译
+#   target/linux/airoha/dts/an7581.dtsi（同目录 include 优先）⇒ en7581-soe 节点从未进 DTB，
+#   airoha_soe_present() 找不到 compatible ⇒ SOE 全族（F122）空转。作者树 73c3ab3 的
+#   target/linux/airoha/dts/an7581.dtsi L922 即此节点（eth 之前、同形）。本补丁对目标树落地同形节点。
+#   内核侧 9999-10/11/12..28 补丁全部保留不变（驱动/绑定照旧挂内核树）。
+# 实证：GNU patch -p1 --fuzz=0 干净应用（链序 9059a→9059b 双向验证）+ 本地 cpp/dtc 复刻 CI 命令行编译 DTB，strings 判据命中（详见 tmp/dtc-check/）。修正版：scu_clk_gat 移到 airoha,chip-scu 属性之后（dtc: Properties must precede subnodes）。
+# 档位 #EXP：与 SOE 族（9999-10..28）同档；实机判据见 FIXES F122（fdt 应含 en7581-soe 字符串）。
+diff --git a/target/linux/airoha/dts/an7581.dtsi b/target/linux/airoha/dts/an7581.dtsi
+index 8be12355..4ce34586 100644
+--- a/target/linux/airoha/dts/an7581.dtsi
++++ b/target/linux/airoha/dts/an7581.dtsi
+@@ -903,6 +903,12 @@
+ 			status = "disabled";
+ 		};
+ 
++		soe: soe@1fbfa000 {
++			compatible = "airoha,en7581-soe";
++			reg = <0x0 0x1fbfa000 0x0 0x268>;
++			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
++		};
++
+ 		eth: ethernet@1fb50000 {
+ 			compatible = "airoha,en7581-eth";
+ 			reg = <0 0x1fb50000 0 0x2600>,

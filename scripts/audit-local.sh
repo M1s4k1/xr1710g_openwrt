@@ -17,25 +17,26 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/source-resolver.sh"
 UPSTREAM="${UPSTREAM_DIR:-}"
-if [[ -z "$UPSTREAM" ]]; then
-  for u in "$ROOT/../xr1710g-openwrt" "$ROOT/../../xr1710g-openwrt" "$ROOT/upstream"; do
-    [[ -d "$u" && -f "$u/patches/MANIFEST" ]] && UPSTREAM="$u" && break
-  done
-  UPSTREAM="${UPSTREAM:-$ROOT/../xr1710g-openwrt}"
-fi
+AGGREGATE_SOURCE_ARG=""
+AGGREGATE_REF_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --upstream) UPSTREAM="$2"; shift 2 ;;
+    --aggregate-source) AGGREGATE_SOURCE_ARG="$2"; shift 2 ;;
+    --aggregate-ref) AGGREGATE_REF_ARG="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
+source_resolve "$ROOT" "$AGGREGATE_SOURCE_ARG" "$AGGREGATE_REF_ARG" "$UPSTREAM"
+UPSTREAM="$AGGREGATE_DIR_RESOLVED"
 RED=0
 fail() { echo "  [FAIL] $*" >&2; RED=1; }
 ok()   { echo "  [ok]   $*"; }
-
 RULES="$ROOT/local/manifest.rules"
 SAFE="$ROOT/local/manifest.rules.v1-safe"
 MF="$UPSTREAM/patches/MANIFEST"
@@ -49,9 +50,14 @@ for R in "$RULES" "$SAFE"; do
     # 跳过注释与空行
     [[ -z "${s// }" ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    # 规则行必须匹配 "符 路径"
-    if ! [[ "$line" =~ ^[[:space:]]*[-^+][[:space:]]+[^[:space:]]+\.patch ]]; then
+    # 规则行必须匹配 "符 路径"；`!` 额外带一个替换目标
+    if ! [[ "$line" =~ ^[[:space:]]*[-^+!][[:space:]]+[^[:space:]]+\.patch ]]; then
       fail "$(basename "$R"): 非法规则行：$line"; n_bad=$((n_bad+1)); continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*![[:space:]]+[^[:space:]]+\.patch[[:space:]]+[^[:space:]]+\.patch([[:space:]]|#|$) ]]; then
+      :
+    elif [[ "$line" =~ ^[[:space:]]*! ]]; then
+      fail "$(basename "$R"): 替换规则必须为 ! <旧补丁> <新补丁>：$line"; n_bad=$((n_bad+1)); continue
     fi
     # 必带理由
     if ! [[ "$line" == *"理由"* ]]; then
@@ -73,8 +79,32 @@ if [[ -f "$MF" ]]; then
     [[ -f "$R" ]] || continue
     while IFS= read -r line; do
       [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      [[ "$line" =~ ^[[:space:]]*([-^+])[[:space:]]+([^[:space:]]+) ]] || continue
+      [[ "$line" =~ ^[[:space:]]*([-^+!])[[:space:]]+([^[:space:]]+) ]] || continue
       op="${BASH_REMATCH[1]}"; p="${BASH_REMATCH[2]}"
+      if [[ "$op" == "!" ]]; then
+        rest="${line#*"$p"}"
+        newp="${rest#* }"
+        newp="${newp%%[[:space:]#]*}"
+        [[ "$newp" == *.patch ]] || { fail "$(basename "$R"): 替换新补丁缺失：$line"; miss=$((miss+1)); continue; }
+        [[ "$p" != "$newp" ]] || { fail "$(basename "$R"): 替换新旧补丁相同：$p"; miss=$((miss+1)); continue; }
+        old_found=0; new_found=0
+        for m in "${MF_PATHS[@]}"; do
+          [[ "$m" == "$p" ]] && old_found=1
+          [[ "$m" == "$newp" ]] && new_found=1
+        done
+        [[ "$old_found" == 1 ]] || { fail "$(basename "$R"): 替换旧项不在 MANIFEST：$p"; miss=$((miss+1)); }
+        if [[ "$new_found" == 1 ]]; then
+          fail "$(basename "$R"): 替换新项已在 MANIFEST：$newp"; miss=$((miss+1))
+        else
+          case "$newp" in
+            patches/local/*) lp="$ROOT/local/patches/${newp#patches/local/}" ;;
+            patches/*)       lp="$ROOT/local/patches/${newp#patches/}" ;;
+            *)               lp="$ROOT/local/$newp" ;;
+          esac
+          [[ -f "$lp" || -f "$UPSTREAM/$newp" ]] || { fail "$(basename "$R"): 替换新补丁不存在：$newp"; miss=$((miss+1)); }
+        fi
+        continue
+      fi
       if [[ "$op" == "+" ]]; then
         # 语义路径 "patches/local/9501-xxx.patch" 对应物理文件 local/patches/9501-xxx.patch
         case "$p" in

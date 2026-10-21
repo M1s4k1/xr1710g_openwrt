@@ -1,0 +1,24 @@
+# Source: YYH2913/openwrt mt76/0101（upstream 风格，带 Link: patchwork + Signed-off-by: Felix Fietkau）
+#   —— 2026-09-12 P3-C 吸收，**档位 default**（纯边界校验，零行为回归）
+# Upstream: mt76 next 线已含（`Cc: stable`）；下次 pin bump 时优先复查能否删除
+# Reason: mt7996_eeprom_check_or_use_default() 在解析/拷贝前未校验默认 EEPROM 固件大小；
+#   截断的默认 bin 会让 mt7996_eeprom_variant_valid() 与 fallback 拷贝按整块 EEPROM 处理 → 越界读。
+#   加 `if (fw->size < MT7996_EEPROM_SIZE) → -EINVAL`（6 行）。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序 fuzz=0。
+diff --git a/mt7996/eeprom.c b/mt7996/eeprom.c
+index d6bfa0c1..42c6ddf1 100644
+--- a/mt7996/eeprom.c
++++ b/mt7996/eeprom.c
+@@ -156,6 +156,12 @@ mt7996_eeprom_check_or_use_default(struct mt7996_dev *dev, bool use_default)
+ 		goto out;
+ 	}
+ 
++	if (fw->size < MT7996_EEPROM_SIZE) {
++		dev_err(dev->mt76.dev, "Invalid default bin size\n");
++		ret = -EINVAL;
++		goto out;
++	}
++
+ 	if (!use_default && mt7996_eeprom_variant_valid(dev, fw->data))
+ 		goto out;
+ 

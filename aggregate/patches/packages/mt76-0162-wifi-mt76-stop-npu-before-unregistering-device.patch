@@ -1,0 +1,146 @@
+# Source: YYH2913/openwrt mt76/0162（Yanghan Ye, 2026-08-07）—— 2026-09-12 P3-B 吸收，#EXP
+# Upstream: n/a
+# Reason: 原顺序下 NPU stop 握手在 mac80211 teardown 之后发出，firmware 需要的 Wi-Fi ring
+#   状态已被拆掉 → 握手超时，随后 NPU core recovery 让 mailbox 在后续模块重载中持续无响应。
+#   修法：mt7996_npu_hw_stop() 拆成 __mt7996_npu_hw_stop(dev, bool recover) +
+#   mt7996_npu_hw_stop_teardown()（recover=false）；mt7996_unregister_device() 把 stop 调用
+#   从 mt76_unregister_device() 之后**提到之前**（与 SER 路径同序）；drain 循环改为
+#   `if (err) return err; if (!info) break; if (i==10) return -ETIMEDOUT;`；正常 teardown 超时
+#   **不再重启核心**。三阶段加 dev_warn。
+# 依赖：0153（同一函数 mt7996_unregister_device）/0155（prepare_retry）。glob 序 0162 最后。
+# 实证：对 be5ce791 + 本仓 mt76 内层全序按序 fuzz=0。
+diff --git a/mt7996/init.c b/mt7996/init.c
+index 3418193d..d07856aa 100644
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -1845,14 +1845,14 @@ void mt7996_unregister_device(struct mt7996_dev *dev)
+ 	cancel_work_sync(&dev->wed_rro.work);
+ 	cancel_work_sync(&dev->reset_work);
+ 	cancel_work_sync(&dev->rc_work);
++	err = mt7996_npu_hw_stop_teardown(dev);
++	if (err)
++		dev_warn(dev->mt76.dev, "failed to stop NPU: %d\n", err);
+ 	mt7996_unregister_phy(mt7996_phy3(dev));
+ 	mt7996_unregister_phy(mt7996_phy2(dev));
+ 	mt7996_unregister_thermal(&dev->phy);
+ 	mt7996_coredump_unregister(dev);
+ 	mt76_unregister_device(&dev->mt76);
+-	err = mt7996_npu_hw_stop(dev);
+-	if (err)
+-		dev_warn(dev->mt76.dev, "failed to stop NPU: %d\n", err);
+ 	mt76_npu_rx_queues_deinit(&dev->mt76);
+ 	mt7996_wed_rro_free(dev);
+ 	mt7996_mcu_exit(dev);
+diff --git a/mt7996/mt7996.h b/mt7996/mt7996.h
+index d020d377..3cd7989b 100644
+--- a/mt7996/mt7996.h
++++ b/mt7996/mt7996.h
+@@ -1015,6 +1015,7 @@ void mt7996_dma_rro_start(struct mt7996_dev *dev);
+ int __mt7996_npu_hw_init(struct mt7996_dev *dev);
+ int mt7996_npu_hw_init(struct mt7996_dev *dev);
+ int mt7996_npu_hw_stop(struct mt7996_dev *dev);
++int mt7996_npu_hw_stop_teardown(struct mt7996_dev *dev);
+ int mt7996_npu_rx_queues_init(struct mt7996_dev *dev);
+ #else
+ static inline int __mt7996_npu_hw_init(struct mt7996_dev *dev)
+@@ -1032,6 +1033,11 @@ static inline int mt7996_npu_hw_stop(struct mt7996_dev *dev)
+ 	return 0;
+ }
+ 
++static inline int mt7996_npu_hw_stop_teardown(struct mt7996_dev *dev)
++{
++	return 0;
++}
++
+ static inline int mt7996_npu_rx_queues_init(struct mt7996_dev *dev)
+ {
+ 	return 0;
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index 6d7fa4d6..d21a96c1 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -640,35 +640,48 @@ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 	return err;
+ }
+ 
+-static int mt7996_npu_hw_stop_once(struct airoha_npu *npu)
++static int mt7996_npu_hw_stop_once(struct mt7996_dev *dev,
++				   struct airoha_npu *npu)
+ {
+ 	int i, err;
+ 	u32 info;
+ 
+ 	err = mt76_npu_send_msg(npu, 4, WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+ 				0, GFP_KERNEL);
+-	if (err)
++	if (err) {
++		dev_warn(dev->mt76.dev, "NPU pause request failed: %d\n", err);
+ 		return err;
++	}
+ 
+ 	for (i = 0; i < 10; i++) {
+ 		err = mt76_npu_get_msg(npu, 3, WLAN_FUNC_GET_WAIT_NPU_INFO,
+ 				       &info, GFP_KERNEL);
+-		if (err)
++		if (err) {
++			dev_warn(dev->mt76.dev,
++				 "NPU drain status request failed: %d\n", err);
+ 			return err;
++		}
+ 		if (!info)
+ 			break;
+ 
+ 		usleep_range(10000, 15000);
+ 	}
+-	if (i == 10)
++	if (i == 10) {
++		dev_warn(dev->mt76.dev,
++			 "NPU drain did not complete, status: %#x\n", info);
+ 		return -ETIMEDOUT;
++	}
++
++	err = mt76_npu_send_msg(npu, 6,
++				WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
++				0, GFP_KERNEL);
++	if (err)
++		dev_warn(dev->mt76.dev, "NPU detach request failed: %d\n", err);
+ 
+-	return mt76_npu_send_msg(npu, 6,
+-				 WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+-				 0, GFP_KERNEL);
++	return err;
+ }
+ 
+-int mt7996_npu_hw_stop(struct mt7996_dev *dev)
++static int __mt7996_npu_hw_stop(struct mt7996_dev *dev, bool recover)
+ {
+ 	struct airoha_npu *npu;
+ 	int err = 0;
+@@ -679,14 +692,24 @@ int mt7996_npu_hw_stop(struct mt7996_dev *dev)
+ 	if (!npu)
+ 		goto unlock;
+ 
+-	err = mt7996_npu_hw_stop_once(npu);
+-	if (err == -ETIMEDOUT || err == -EAGAIN) {
++	err = mt7996_npu_hw_stop_once(dev, npu);
++	if (recover && (err == -ETIMEDOUT || err == -EAGAIN)) {
+ 		err = mt7996_npu_prepare_retry(dev, npu, err, "NPU stop");
+ 		if (!err)
+-			err = mt7996_npu_hw_stop_once(npu);
++			err = mt7996_npu_hw_stop_once(dev, npu);
+ 	}
+ unlock:
+ 	mutex_unlock(&dev->mt76.mutex);
+ 
+ 	return err;
+ }
++
++int mt7996_npu_hw_stop(struct mt7996_dev *dev)
++{
++	return __mt7996_npu_hw_stop(dev, true);
++}
++
++int mt7996_npu_hw_stop_teardown(struct mt7996_dev *dev)
++{
++	return __mt7996_npu_hw_stop(dev, false);
++}

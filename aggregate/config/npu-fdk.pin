@@ -1,0 +1,4 @@
+repo=https://github.com/hurryman2212/airoha-npu-fdk
+commit=2d13e291ab511b6b319dc5073f47e26cac958ae4
+tarball_sha256=7ac4dd434e38c910fcd2dee3a6436c5c2f11bffb8a98e2f2969b62ec4116f0f4
+# codeload tarball 由 commit SHA 下载；改 pin 必须重算 hash（锁源铁律）

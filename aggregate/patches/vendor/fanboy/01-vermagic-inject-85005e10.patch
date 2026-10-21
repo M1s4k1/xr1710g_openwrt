@@ -1,0 +1,37 @@
+From 85005e10d782580e9d566ec3f7360a4c2cf1685b Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Wed, 18 Mar 2026 05:38:12 -1000
+Subject: [PATCH] inject buildbot vermagic to kernel-defaults and restore kmod
+ packages
+
+---
+ include/feeds.mk           | 3 +--
+ include/kernel-defaults.mk | 1 +
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/include/feeds.mk b/include/feeds.mk
+index dfba92fa29377a..82808faa6b3889 100644
+--- a/include/feeds.mk
++++ b/include/feeds.mk
+@@ -53,8 +53,7 @@ define FeedSourcesAppendAPK
+   echo '%U/targets/%S/packages/packages.adb'; \
+   $(strip $(if $(CONFIG_PER_FEED_REPO), \
+ 	echo '%U/packages/%A/base/packages.adb'; \
+-	$(if $(CONFIG_BUILDBOT), \
+-		echo '%U/targets/%S/kmods/$(LINUX_VERSION)-$(LINUX_RELEASE)-$(LINUX_VERMAGIC)/packages.adb';) \
++	echo '%U/targets/%S/kmods/$(LINUX_VERSION)-$(LINUX_RELEASE)-$(LINUX_VERMAGIC)/packages.adb'; \
+ 	$(foreach feed,$(FEEDS_AVAILABLE), \
+ 		$(if $(CONFIG_FEED_$(feed)), \
+ 			echo '$(if $(filter m,$(CONFIG_FEED_$(feed))),# )%U/packages/%A/$(feed)/packages.adb';)))) \
+diff --git a/include/kernel-defaults.mk b/include/kernel-defaults.mk
+index eb852a04cabcae..b4f01251915e06 100644
+--- a/include/kernel-defaults.mk
++++ b/include/kernel-defaults.mk
+@@ -127,6 +127,7 @@ define Kernel/Configure/Default
+ 	}
+ 	$(_SINGLE) [ -d $(LINUX_DIR)/user_headers ] || $(KERNEL_MAKE) $(if $(findstring uml,$(BOARD)),ARCH=$(ARCH)) INSTALL_HDR_PATH=$(LINUX_DIR)/user_headers headers_install
+ 	grep '=[ym]' $(LINUX_DIR)/.config.set | LC_ALL=C sort | $(MKHASH) md5 > $(LINUX_DIR)/.vermagic
++	[ ! -f ../../../files/etc/vermagic.txt ] || cp ../../../files/etc/vermagic.txt $(LINUX_DIR)/.vermagic
+ endef
+ 
+ define Kernel/Configure/Initramfs

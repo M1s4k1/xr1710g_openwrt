@@ -1,0 +1,1821 @@
+diff --git a/target/linux/airoha/patches-6.18/9999-xfrm-00-packet-offload-framework.patch b/target/linux/airoha/patches-6.18/9999-xfrm-00-packet-offload-framework.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-xfrm-00-packet-offload-framework.patch
+@@ -0,0 +1,1816 @@
++# Source: hurryman2212/OpenW1700k-test @offload-oc（2026-09-12 P2 吸收，父代理独立复核）
++# Upstream: n/a（作者自持；未提上游 PR——A 系列是 xfrm packet-offload 框架的私有一版）
++# Reason: 引入 **xfrm packet-offload manager** 框架：`ndo` 发送回调、per-netns manager 跟踪、
++#   state 生命周期/校验/UAF 加固、driver-own-transmit、policy 变更通知、用户更新时保留 ownership。
++#   这是让 AN7581 SOE 能接管 ESP 发送路径的**基础设施**（B 系列 SOE 主体的前置）。
++# 实证：对本仓 kernel 6.18.44 真源**全序 9/9 干净应用**（仅 9999-04 offset 8、9999-08 offset 3），
++#   对照 `research-20260912/hurryman-test/` 与 `hurryman-d/`。
++# 档位 #EXP：这是内核 xfrm 核心改动，虽已实证可应用，但仍需构建 + IPsec 实测（issue #6/F52）。
++# 判据：编译通过；`ip xfrm state add` 后 ESP 走硬件路径；`cpu-offload` 位与 EIP93/SOE 计数增长。
++# 注意：与 B 系列（SOE 驱动 9999-10..28）配套；仅 A 系列单独落地不产生 IPsec 加速。
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] net: add packet offload transmit callback
++
++Let packet-offload devices transmit packets through their own hardware path.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ include/linux/netdevice.h | 13 +++++++++++++
++ 1 file changed, 13 insertions(+)
++
++diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
++index d4129af..f08d3e5 100644
++--- a/include/linux/netdevice.h
+++++ b/include/linux/netdevice.h
++@@ -1036,6 +1036,19 @@ struct xfrmdev_ops {
++ 	int	(*xdo_dev_policy_add) (struct xfrm_policy *x, struct netlink_ext_ack *extack);
++ 	void	(*xdo_dev_policy_delete) (struct xfrm_policy *x);
++ 	void	(*xdo_dev_policy_free) (struct xfrm_policy *x);
+++	/* Optional packet-offload TX path for devices that need
+++	 * driver-specific transmit preparation instead of continuing through
+++	 * the regular XFRM output path, such as adding offload metadata or
+++	 * steering the packet to a private transmit queue. The driver consumes
+++	 * skb and returns the final transmit status. The driver must call
+++	 * xfrm_dev_packet_state_check() once for every final packet it submits,
+++	 * including every segment it creates from a GSO skb. The core keeps the
+++	 * device offload state alive until the callback returns without holding
+++	 * the XFRM state lock. Drivers that retain sk after returning must take
+++	 * their own reference; sk may be NULL.
+++	 */
+++	int	(*xdo_dev_packet_xmit)(struct sock *sk, struct sk_buff *skb,
+++				       struct xfrm_state *x);
++ };
++ #endif
++ 
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: track packet offload managers per namespace
++
++Track packet-offload managers and policy safety state in each network namespace.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ include/net/netns/xfrm.h | 3 +++
++ 1 file changed, 3 insertions(+)
++
++diff --git a/include/net/netns/xfrm.h b/include/net/netns/xfrm.h
++index 23dd647..5329edc 100644
++--- a/include/net/netns/xfrm.h
+++++ b/include/net/netns/xfrm.h
++@@ -50,6 +50,9 @@ struct netns_xfrm {
++ 
++ 	struct list_head	policy_all;
++ 	struct hlist_head	*policy_byidx;
+++	atomic_t		policy_genid;
+++	atomic_t		policy_change_count;
+++	atomic_t		policy_flowtable_unsafe;
++ 	unsigned int		policy_idx_hmask;
++ 	unsigned int		idx_generator;
++ 	struct xfrm_policy_hash	policy_bydst[XFRM_POLICY_MAX];
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: add packet offload state helpers
++
++Add the common helpers needed to manage packet-offloaded XFRM states.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ include/net/xfrm.h | 124 ++++++++++++++++++++++++++++++++++-----------
++ 1 file changed, 95 insertions(+), 29 deletions(-)
++
++diff --git a/include/net/xfrm.h b/include/net/xfrm.h
++index af0869c..2c3b544 100644
++--- a/include/net/xfrm.h
+++++ b/include/net/xfrm.h
++@@ -144,6 +144,8 @@ enum {
++ 
++ enum {
++ 	XFRM_DEV_OFFLOAD_FLAG_ACQ = 1,
+++	/* Defer flowtable creation until an authenticated input SA is known. */
+++	XFRM_DEV_OFFLOAD_FLAG_FLOWTABLE_INPUT = 2,
++ };
++ 
++ struct xfrm_dev_offload {
++@@ -154,6 +156,8 @@ struct xfrm_dev_offload {
++ 	 */
++ 	struct net_device	*dev;
++ 	netdevice_tracker	dev_tracker;
+++	/* State callbacks captured when the offload is installed. */
+++	const struct xfrmdev_ops	*state_ops;
++ 	/* This is a private pointer used by the bonding driver (and eventually
++ 	 * should be moved there). Device drivers should not use it.
++ 	 * Protected by xfrm_state.lock AND bond.ipsec_lock in most cases,
++@@ -162,6 +166,12 @@ struct xfrm_dev_offload {
++ 	 */
++ 	struct net_device	*real_dev;
++ 	unsigned long		offload_handle;
+++	/* Snapshot the attached device index for dump paths. */
+++	int			ifindex;
+++	/* References increment while their caller pins the XFRM state and drain
+++	 * before state free. A negative value grants exclusive free ownership.
+++	 */
+++	atomic_t		active_refs;
++ 	u8			dir : 2;
++ 	u8			type : 2;
++ 	u8			flags : 2;
++@@ -398,6 +408,30 @@ void xfrm_policy_unregister_afinfo(const struct xfrm_policy_afinfo *afinfo);
++ void km_policy_notify(struct xfrm_policy *xp, int dir,
++ 		      const struct km_event *c);
++ void km_state_notify(struct xfrm_state *x, const struct km_event *c);
+++#ifdef CONFIG_XFRM
+++void xfrm_policy_change_begin(struct net *net);
+++void xfrm_policy_change_end(struct net *net);
+++u32 xfrm_policy_generation(const struct net *net);
+++bool xfrm_policy_flowtable_eligible(const struct net *net);
+++#else
+++static inline void xfrm_policy_change_begin(struct net *net)
+++{
+++}
+++
+++static inline void xfrm_policy_change_end(struct net *net)
+++{
+++}
+++
+++static inline u32 xfrm_policy_generation(const struct net *net)
+++{
+++	return 0;
+++}
+++
+++static inline bool xfrm_policy_flowtable_eligible(const struct net *net)
+++{
+++	return false;
+++}
+++#endif
++ 
++ struct xfrm_tmpl;
++ int km_query(struct xfrm_state *x, struct xfrm_tmpl *t,
++@@ -705,6 +739,8 @@ struct xfrm_migrate {
++ struct xfrm_mgr {
++ 	struct list_head	list;
++ 	int			(*notify)(struct xfrm_state *x, const struct km_event *c);
+++	void			(*policy_change_begin)(struct net *net);
+++	void			(*policy_changed)(struct net *net);
++ 	int			(*acquire)(struct xfrm_state *x, struct xfrm_tmpl *, struct xfrm_policy *xp);
++ 	struct xfrm_policy	*(*compile_policy)(struct sock *sk, int opt, u8 *data, int len, int *dir);
++ 	int			(*new_mapping)(struct xfrm_state *x, xfrm_address_t *ipaddr, __be16 sport);
++@@ -1149,7 +1185,7 @@ struct xfrm_offload {
++ #define	CRYPTO_FALLBACK		8
++ #define	XFRM_GSO_SEGMENT	16
++ #define	XFRM_GRO		32
++-/* 64 is free */
+++#define	XFRM_HW_FLOW_ID		64
++ #define	XFRM_DEV_RESUME		128
++ #define	XFRM_XMIT		256
++ 
++@@ -1168,12 +1204,16 @@ struct xfrm_offload {
++ 
++ 	__u8			proto;
++ 	__u8			inner_ipproto;
+++	__u32			hw_flow_id;
++ };
++ 
++ struct sec_path {
++ 	int			len;
++ 	int			olen;
++ 	int			verified_cnt;
+++	u8			policy_checked;
+++	u8			policy_flowtable;
+++	u32			policy_genid;
++ 
++ 	struct xfrm_state	*xvec[XFRM_MAX_DEPTH];
++ 	struct xfrm_offload	ovec[XFRM_MAX_OFFLOAD_DEPTH];
++@@ -1250,6 +1290,21 @@ static inline struct xfrm_offload *xfrm_offload(struct sk_buff *skb)
++ #endif
++ }
++ 
+++static inline struct xfrm_offload *xfrm_input_offload(struct sk_buff *skb)
+++{
+++#ifdef CONFIG_XFRM
+++	struct sec_path *sp = skb_sec_path(skb);
+++
+++	if (!sp || sp->olen || !sp->len ||
+++	    sp->len > XFRM_MAX_OFFLOAD_DEPTH)
+++		return NULL;
+++
+++	return &sp->ovec[sp->len - 1];
+++#else
+++	return NULL;
+++#endif
+++}
+++
++ #ifdef CONFIG_XFRM
++ int __xfrm_policy_check(struct sock *, int dir, struct sk_buff *skb,
++ 			unsigned short family);
++@@ -1706,18 +1761,10 @@ struct xfrm_state *xfrm_stateonly_find(struct net *net, u32 mark, u32 if_id,
++ struct xfrm_state *xfrm_state_lookup_byspi(struct net *net, __be32 spi,
++ 					      unsigned short family);
++ int xfrm_state_check_expire(struct xfrm_state *x);
+++void xfrm_state_expire(struct xfrm_state *x);
++ void xfrm_state_update_stats(struct net *net);
++ #ifdef CONFIG_XFRM_OFFLOAD
++-static inline void xfrm_dev_state_update_stats(struct xfrm_state *x)
++-{
++-	struct xfrm_dev_offload *xdo = &x->xso;
++-	struct net_device *dev = READ_ONCE(xdo->dev);
++-
++-	if (dev && dev->xfrmdev_ops &&
++-	    dev->xfrmdev_ops->xdo_dev_state_update_stats)
++-		dev->xfrmdev_ops->xdo_dev_state_update_stats(x);
++-
++-}
+++void xfrm_dev_state_update_stats(struct xfrm_state *x);
++ #else
++ static inline void xfrm_dev_state_update_stats(struct xfrm_state *x) {}
++ #endif
++@@ -2070,6 +2117,9 @@ static inline void xfrm_states_delete(struct xfrm_state **states, int n)
++ #endif
++ 
++ void __init xfrm_dev_init(void);
+++int xfrm_dev_packet_state_check(struct xfrm_state *x, struct sk_buff *skb);
+++int xfrm_dev_packet_input_state_check(struct xfrm_state *x, struct sk_buff *skb,
+++				      __be32 seq);
++ 
++ #ifdef CONFIG_XFRM_OFFLOAD
++ void xfrm_dev_resume(struct sk_buff *skb);
++@@ -2081,18 +2131,16 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
++ int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ 			struct xfrm_user_offload *xuo, u8 dir,
++ 			struct netlink_ext_ack *extack);
+++/* Caller holds x; a successful get pins the state, xso.dev, and private
+++ * state against free, but not the driver's state-delete callback.
+++ */
+++bool xfrm_dev_offload_get(struct xfrm_state *x);
+++void xfrm_dev_offload_put(struct xfrm_state *x);
++ bool xfrm_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x);
++ void xfrm_dev_state_delete(struct xfrm_state *x);
++ void xfrm_dev_state_free(struct xfrm_state *x);
++ 
++-static inline void xfrm_dev_state_advance_esn(struct xfrm_state *x)
++-{
++-	struct xfrm_dev_offload *xso = &x->xso;
++-	struct net_device *dev = READ_ONCE(xso->dev);
++-
++-	if (dev && dev->xfrmdev_ops->xdo_dev_state_advance_esn)
++-		dev->xfrmdev_ops->xdo_dev_state_advance_esn(x);
++-}
+++void xfrm_dev_state_advance_esn(struct xfrm_state *x);
++ 
++ static inline bool xfrm_dst_offload_ok(struct dst_entry *dst)
++ {
++@@ -2114,24 +2162,33 @@ static inline bool xfrm_dst_offload_ok(struct dst_entry *dst)
++ 
++ static inline void xfrm_dev_policy_delete(struct xfrm_policy *x)
++ {
+++	const struct xfrmdev_ops *ops;
++ 	struct xfrm_dev_offload *xdo = &x->xdo;
++-	struct net_device *dev = xdo->dev;
+++	struct net_device *dev = READ_ONCE(xdo->dev);
++ 
++-	if (dev && dev->xfrmdev_ops && dev->xfrmdev_ops->xdo_dev_policy_delete)
++-		dev->xfrmdev_ops->xdo_dev_policy_delete(x);
+++	if (!dev)
+++		return;
+++
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	if (ops && ops->xdo_dev_policy_delete)
+++		ops->xdo_dev_policy_delete(x);
++ }
++ 
++ static inline void xfrm_dev_policy_free(struct xfrm_policy *x)
++ {
+++	const struct xfrmdev_ops *ops;
++ 	struct xfrm_dev_offload *xdo = &x->xdo;
++-	struct net_device *dev = xdo->dev;
+++	struct net_device *dev = READ_ONCE(xdo->dev);
++ 
++-	if (dev && dev->xfrmdev_ops) {
++-		if (dev->xfrmdev_ops->xdo_dev_policy_free)
++-			dev->xfrmdev_ops->xdo_dev_policy_free(x);
++-		xdo->dev = NULL;
++-		netdev_put(dev, &xdo->dev_tracker);
++-	}
+++	if (!dev)
+++		return;
+++
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	if (ops && ops->xdo_dev_policy_free)
+++		ops->xdo_dev_policy_free(x);
+++	WRITE_ONCE(xdo->dev, NULL);
+++	xdo->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
+++	netdev_put(dev, &xdo->dev_tracker);
++ }
++ #else
++ static inline void xfrm_dev_resume(struct sk_buff *skb)
++@@ -2160,6 +2217,15 @@ static inline void xfrm_dev_state_free(struct xfrm_state *x)
++ {
++ }
++ 
+++static inline bool xfrm_dev_offload_get(struct xfrm_state *x)
+++{
+++	return false;
+++}
+++
+++static inline void xfrm_dev_offload_put(struct xfrm_state *x)
+++{
+++}
+++
++ static inline int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ 				      struct xfrm_user_offload *xuo, u8 dir,
++ 				      struct netlink_ext_ack *extack)
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: manage packet offload device lifetime
++
++Coordinate packet-offload state ownership with network device lifetime.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_device.c | 161 +++++++++++++++++++++++++++++++++++------
++ 1 file changed, 139 insertions(+), 22 deletions(-)
++
++diff --git a/net/xfrm/xfrm_device.c b/net/xfrm/xfrm_device.c
++index 550457e..68c1210 100644
++--- a/net/xfrm/xfrm_device.c
+++++ b/net/xfrm/xfrm_device.c
++@@ -14,6 +14,7 @@
++ #include <linux/skbuff.h>
++ #include <linux/slab.h>
++ #include <linux/spinlock.h>
+++#include <linux/wait_bit.h>
++ #include <net/dst.h>
++ #include <net/gso.h>
++ #include <net/xfrm.h>
++@@ -232,6 +233,7 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
++ 		       struct xfrm_user_offload *xuo,
++ 		       struct netlink_ext_ack *extack)
++ {
+++	const struct xfrmdev_ops *ops;
++ 	int err;
++ 	struct dst_entry *dst;
++ 	struct net_device *dev;
++@@ -292,14 +294,15 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
++ 		dst_release(dst);
++ 	}
++ 
++-	if (!dev->xfrmdev_ops || !dev->xfrmdev_ops->xdo_dev_state_add) {
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	if (!ops || !ops->xdo_dev_state_add) {
++ 		xso->dev = NULL;
++ 		dev_put(dev);
++ 		return (is_packet_offload) ? -EINVAL : 0;
++ 	}
++ 
++ 	if (!is_packet_offload && x->props.flags & XFRM_STATE_ESN &&
++-	    !dev->xfrmdev_ops->xdo_dev_state_advance_esn) {
+++	    !ops->xdo_dev_state_advance_esn) {
++ 		NL_SET_ERR_MSG(extack, "Device doesn't support offload with ESN");
++ 		xso->dev = NULL;
++ 		dev_put(dev);
++@@ -324,11 +327,13 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
++ 		xso->type = XFRM_DEV_OFFLOAD_PACKET;
++ 	else
++ 		xso->type = XFRM_DEV_OFFLOAD_CRYPTO;
+++	xso->state_ops = ops;
++ 
++-	err = dev->xfrmdev_ops->xdo_dev_state_add(dev, x, extack);
+++	err = ops->xdo_dev_state_add(dev, x, extack);
++ 	if (err) {
++ 		xso->dev = NULL;
++ 		xso->dir = 0;
+++		xso->state_ops = NULL;
++ 		netdev_put(dev, &xso->dev_tracker);
++ 		xso->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
++ 
++@@ -351,6 +356,7 @@ int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ 			struct xfrm_user_offload *xuo, u8 dir,
++ 			struct netlink_ext_ack *extack)
++ {
+++	const struct xfrmdev_ops *ops;
++ 	struct xfrm_dev_offload *xdo = &xp->xdo;
++ 	struct net_device *dev;
++ 	int err;
++@@ -367,7 +373,8 @@ int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ 	if (!dev)
++ 		return -EINVAL;
++ 
++-	if (!dev->xfrmdev_ops || !dev->xfrmdev_ops->xdo_dev_policy_add) {
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	if (!ops || !ops->xdo_dev_policy_add) {
++ 		xdo->dev = NULL;
++ 		dev_put(dev);
++ 		NL_SET_ERR_MSG(extack, "Policy offload is not supported");
++@@ -394,7 +401,7 @@ int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ 		return -EINVAL;
++ 	}
++ 
++-	err = dev->xfrmdev_ops->xdo_dev_policy_add(xp, extack);
+++	err = ops->xdo_dev_policy_add(xp, extack);
++ 	if (err) {
++ 		xdo->dev = NULL;
++ 		xdo->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
++@@ -408,20 +415,119 @@ int xfrm_dev_policy_add(struct net *net, struct xfrm_policy *xp,
++ }
++ EXPORT_SYMBOL_GPL(xfrm_dev_policy_add);
++ 
+++static bool xfrm_dev_offload_get_locked(struct xfrm_state *x)
+++{
+++	lockdep_assert_held(&x->lock);
+++
+++	if (x->km.state == XFRM_STATE_VALID && x->xso.dev &&
+++	    atomic_inc_unless_negative(&x->xso.active_refs)) {
+++		xfrm_state_hold(x);
+++		return true;
+++	}
+++
+++	return false;
+++}
+++
+++bool xfrm_dev_offload_get(struct xfrm_state *x)
+++{
+++	bool held;
+++
+++	spin_lock_bh(&x->lock);
+++	held = xfrm_dev_offload_get_locked(x);
+++	spin_unlock_bh(&x->lock);
+++
+++	return held;
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_offload_get);
+++
+++void xfrm_dev_offload_put(struct xfrm_state *x)
+++{
+++	atomic_dec_and_wake_up(&x->xso.active_refs);
+++	xfrm_state_put(x);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_offload_put);
+++
+++void xfrm_dev_state_update_stats(struct xfrm_state *x)
+++{
+++	struct xfrm_dev_offload *xso = &x->xso;
+++	const struct xfrmdev_ops *state_ops;
+++	const struct xfrmdev_ops *ops;
+++	struct net_device *dev;
+++
+++	/* The caller already pins x, but an unlocked dump still needs to keep
+++	 * the device-private state alive against an early offload free.
+++	 */
+++	if (!atomic_inc_unless_negative(&xso->active_refs))
+++		return;
+++
+++	dev = READ_ONCE(xso->dev);
+++	state_ops = READ_ONCE(xso->state_ops);
+++	if (dev && state_ops) {
+++		ops = READ_ONCE(dev->xfrmdev_ops);
+++		if (ops && ops == state_ops && ops->xdo_dev_state_update_stats)
+++			ops->xdo_dev_state_update_stats(x);
+++	}
+++
+++	atomic_dec_and_wake_up(&xso->active_refs);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_state_update_stats);
+++
+++void xfrm_dev_state_advance_esn(struct xfrm_state *x)
+++{
+++	struct xfrm_dev_offload *xso = &x->xso;
+++	const struct xfrmdev_ops *state_ops;
+++	const struct xfrmdev_ops *ops;
+++	struct net_device *dev;
+++
+++	/* Replay updates run with x->lock held, so acquire only the private-state
+++	 * lifetime reference here rather than recursing through the locking
+++	 * xfrm_dev_offload_get() helper.
+++	 */
+++	if (!atomic_inc_unless_negative(&xso->active_refs))
+++		return;
+++
+++	dev = READ_ONCE(xso->dev);
+++	state_ops = READ_ONCE(xso->state_ops);
+++	if (dev && state_ops) {
+++		ops = READ_ONCE(dev->xfrmdev_ops);
+++		if (ops && ops == state_ops && ops->xdo_dev_state_advance_esn)
+++			ops->xdo_dev_state_advance_esn(x);
+++	}
+++
+++	atomic_dec_and_wake_up(&xso->active_refs);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_state_advance_esn);
+++
++ bool xfrm_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
++ {
++-	int mtu;
+++	const struct xfrmdev_ops *ops;
++ 	struct dst_entry *dst = skb_dst(skb);
++ 	struct xfrm_dst *xdst = (struct xfrm_dst *)dst;
++-	struct net_device *dev = x->xso.dev;
+++	struct net_device *dev;
++ 	bool check_tunnel_size;
+++	bool offload_ok;
+++	bool held;
+++	u8 offload_type;
+++	int mtu;
++ 
++-	if (!x->type_offload ||
++-	    (x->xso.type == XFRM_DEV_OFFLOAD_UNSPECIFIED && x->encap))
+++	spin_lock_bh(&x->lock);
+++	if (x->km.state != XFRM_STATE_VALID) {
+++		spin_unlock_bh(&x->lock);
+++		return false;
+++	}
+++	dev = x->xso.dev;
+++	offload_type = x->xso.type;
+++	held = xfrm_dev_offload_get_locked(x);
+++	spin_unlock_bh(&x->lock);
+++	if (dev && !held)
++ 		return false;
++ 
++-	if ((!dev || dev == xfrm_dst_path(dst)->dev) &&
++-	    !xdst->child->xfrm) {
+++	offload_ok = false;
+++	if (!x->type_offload ||
+++	    (offload_type == XFRM_DEV_OFFLOAD_UNSPECIFIED && x->encap))
+++		goto out;
+++
+++	if ((!dev || dev == xfrm_dst_path(dst)->dev) && !xdst->child->xfrm) {
++ 		mtu = xfrm_state_mtu(x, xdst->child_mtu_cached);
++ 		if (skb->len <= mtu)
++ 			goto ok;
++@@ -430,37 +536,48 @@ bool xfrm_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
++ 			goto ok;
++ 	}
++ 
++-	return false;
+++	goto out;
++ 
++ ok:
++-	if (!dev)
++-		return true;
+++	if (!dev) {
+++		offload_ok = true;
+++		goto out;
+++	}
++ 
++-	check_tunnel_size = x->xso.type == XFRM_DEV_OFFLOAD_PACKET &&
+++	check_tunnel_size = offload_type == XFRM_DEV_OFFLOAD_PACKET &&
++ 			    x->props.mode == XFRM_MODE_TUNNEL;
++ 	switch (skb_dst(skb)->ops->family) {
++ 	case AF_INET:
++ 		/* Check for IPv4 options */
++ 		if (ip_hdr(skb)->ihl != 5)
++-			return false;
+++			goto out;
++ 		if (check_tunnel_size && xfrm4_tunnel_check_size(skb))
++-			return false;
+++			goto out;
++ 		break;
++ 	case AF_INET6:
++ 		/* Check for IPv6 extensions */
++ 		if (ipv6_ext_hdr(ipv6_hdr(skb)->nexthdr))
++-			return false;
+++			goto out;
++ 		if (check_tunnel_size && xfrm6_tunnel_check_size(skb))
++-			return false;
+++			goto out;
++ 		break;
++ 	default:
++ 		break;
++ 	}
++ 
++-	if (dev->xfrmdev_ops->xdo_dev_offload_ok)
++-		return dev->xfrmdev_ops->xdo_dev_offload_ok(skb, x);
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	if (!ops || ops != READ_ONCE(x->xso.state_ops))
+++		offload_ok = false;
+++	else if (ops->xdo_dev_offload_ok)
+++		offload_ok = ops->xdo_dev_offload_ok(skb, x);
+++	else
+++		offload_ok = true;
+++
+++out:
+++	if (held)
+++		xfrm_dev_offload_put(x);
++ 
++-	return true;
+++	return offload_ok;
++ }
++ EXPORT_SYMBOL_GPL(xfrm_dev_offload_ok);
++ 
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: validate packet offload input state
++
++Validate authenticated packet-offload metadata on the XFRM input path.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_input.c | 41 +++++++++++++++++++++++++++++++++++++++++
++ 1 file changed, 41 insertions(+)
++
++diff --git a/net/xfrm/xfrm_input.c b/net/xfrm/xfrm_input.c
++index cfee63a..3ac250e 100644
++--- a/net/xfrm/xfrm_input.c
+++++ b/net/xfrm/xfrm_input.c
++@@ -133,6 +133,9 @@ struct sec_path *secpath_set(struct sk_buff *skb)
++ 	sp->olen = 0;
++ 	sp->len = 0;
++ 	sp->verified_cnt = 0;
+++	sp->policy_checked = 0;
+++	sp->policy_flowtable = 0;
+++	sp->policy_genid = 0;
++ 
++ 	return sp;
++ }
++@@ -379,6 +382,44 @@ static int xfrm_prepare_input(struct xfrm_state *x, struct sk_buff *skb)
++ 	return xfrm_inner_mode_encap_remove(x, skb);
++ }
++ 
+++int xfrm_dev_packet_input_state_check(struct xfrm_state *x, struct sk_buff *skb,
+++				      __be32 seq)
+++{
+++	struct net *net = xs_net(x);
+++	int err;
+++
+++	spin_lock_bh(&x->lock);
+++	if (unlikely(x->km.state != XFRM_STATE_VALID)) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEINVALID);
+++		err = -EINVAL;
+++		goto unlock;
+++	}
+++
+++	err = xfrm_replay_check(x, skb, seq);
+++	if (err) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
+++		goto unlock;
+++	}
+++
+++	err = xfrm_state_check_expire(x);
+++	if (err) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEEXPIRED);
+++		goto unlock;
+++	}
+++
+++	xfrm_replay_advance(x, seq);
+++	x->curlft.bytes += skb->len;
+++	x->curlft.packets++;
+++	x->lastused = ktime_get_real_seconds();
+++	err = 0;
+++
+++unlock:
+++	spin_unlock_bh(&x->lock);
+++
+++	return err;
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_packet_input_state_check);
+++
++ /* Remove encapsulation header.
++  *
++  * The IP header will be moved over the top of the encapsulation header.
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: let packet offload drivers own transmit
++
++Delegate packet transmission to drivers that provide packet XFRM offload.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_output.c | 149 +++++++++++++++++++++++++++++------------
++ 1 file changed, 108 insertions(+), 41 deletions(-)
++
++diff --git a/net/xfrm/xfrm_output.c b/net/xfrm/xfrm_output.c
++index 54222fc..332b934 100644
++--- a/net/xfrm/xfrm_output.c
+++++ b/net/xfrm/xfrm_output.c
++@@ -489,13 +489,57 @@ int pktgen_xfrm_outer_mode_output(struct xfrm_state *x, struct sk_buff *skb)
++ EXPORT_SYMBOL_GPL(pktgen_xfrm_outer_mode_output);
++ #endif
++ 
+++int xfrm_dev_packet_state_check(struct xfrm_state *x, struct sk_buff *skb)
+++{
+++	struct net *net = xs_net(x);
+++	int err;
+++
+++	spin_lock_bh(&x->lock);
+++	if (unlikely(x->km.state != XFRM_STATE_VALID)) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
+++		err = -EINVAL;
+++		goto unlock;
+++	}
+++
+++	err = xfrm_state_check_expire(x);
+++	if (err) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEEXPIRED);
+++		goto unlock;
+++	}
+++
+++	err = xfrm_replay_overflow(x, skb);
+++	if (err) {
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATESEQERROR);
+++		goto unlock;
+++	}
+++
+++	x->curlft.bytes += skb->len;
+++	x->curlft.packets++;
+++	x->lastused = ktime_get_real_seconds();
+++	err = 0;
+++
+++unlock:
+++	spin_unlock_bh(&x->lock);
+++
+++	return err;
+++}
+++EXPORT_SYMBOL_GPL(xfrm_dev_packet_state_check);
+++
++ static int xfrm_output_one(struct sk_buff *skb, int err)
++ {
++ 	struct dst_entry *dst = skb_dst(skb);
++ 	struct xfrm_state *x = dst->xfrm;
++ 	struct net *net = xs_net(x);
+++	bool packet_offload;
++ 
++-	if (err <= 0 || x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
+++	if (err <= 0)
+++		goto resume;
+++
+++	spin_lock_bh(&x->lock);
+++	packet_offload = x->km.state == XFRM_STATE_VALID &&
+++			 x->xso.type == XFRM_DEV_OFFLOAD_PACKET;
+++	spin_unlock_bh(&x->lock);
+++	if (packet_offload)
++ 		goto resume;
++ 
++ 	do {
++@@ -513,31 +557,9 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
++ 			goto error_nolock;
++ 		}
++ 
++-		spin_lock_bh(&x->lock);
++-
++-		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
++-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
++-			err = -EINVAL;
++-			goto error;
++-		}
++-
++-		err = xfrm_state_check_expire(x);
++-		if (err) {
++-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEEXPIRED);
++-			goto error;
++-		}
++-
++-		err = xfrm_replay_overflow(x, skb);
++-		if (err) {
++-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATESEQERROR);
++-			goto error;
++-		}
++-
++-		x->curlft.bytes += skb->len;
++-		x->curlft.packets++;
++-		x->lastused = ktime_get_real_seconds();
++-
++-		spin_unlock_bh(&x->lock);
+++		err = xfrm_dev_packet_state_check(x, skb);
+++		if (err)
+++			goto error_nolock;
++ 
++ 		skb_dst_force(skb);
++ 		if (!skb_dst(skb)) {
++@@ -575,8 +597,6 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
++ 
++ 	return 0;
++ 
++-error:
++-	spin_unlock_bh(&x->lock);
++ error_nolock:
++ 	kfree_skb(skb);
++ out:
++@@ -744,11 +764,17 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
++ {
++ 	struct net *net = dev_net(skb_dst(skb)->dev);
++ 	struct xfrm_state *x = skb_dst(skb)->xfrm;
+++	u8 offload_type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
++ 	int family;
++ 	int err;
++ 
++-	family = (x->xso.type != XFRM_DEV_OFFLOAD_PACKET) ? x->outer_mode.family
++-		: skb_dst(skb)->ops->family;
+++	spin_lock_bh(&x->lock);
+++	if (x->km.state == XFRM_STATE_VALID)
+++		offload_type = x->xso.type;
+++	spin_unlock_bh(&x->lock);
+++
+++	family = offload_type != XFRM_DEV_OFFLOAD_PACKET ? x->outer_mode.family :
+++							 skb_dst(skb)->ops->family;
++ 
++ 	switch (family) {
++ 	case AF_INET:
++@@ -762,25 +788,58 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
++ 		break;
++ 	}
++ 
++-	if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET) {
+++	if (offload_type == XFRM_DEV_OFFLOAD_PACKET) {
+++#ifdef CONFIG_XFRM_OFFLOAD
+++		const struct xfrmdev_ops *ops;
+++		struct net_device *dev;
+++#endif
+++
++ 		if (!xfrm_dev_offload_ok(skb, x)) {
++ 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
++ 			kfree_skb(skb);
++ 			return -EHOSTUNREACH;
++ 		}
++ 
++-		/* Exclusive direct xmit for tunnel mode, as
++-		 * some filtering or matching rules may apply
++-		 * in transport mode.
++-		 * Locally generated packets also require
++-		 * the normal XFRM path for L2 header setup,
++-		 * as the hardware needs the L2 header to match
++-		 * for encryption, so skip direct output as well.
++-		 */
+++#ifdef CONFIG_XFRM_OFFLOAD
+++		if (unlikely(!xfrm_dev_offload_get(x)))
+++			goto state_invalid;
+++
+++		dev = READ_ONCE(x->xso.dev);
+++		ops = READ_ONCE(dev->xfrmdev_ops);
+++		if (unlikely(!ops || ops != READ_ONCE(x->xso.state_ops))) {
+++			xfrm_dev_offload_put(x);
+++			goto state_invalid;
+++		}
+++
+++		if (ops->xdo_dev_packet_xmit) {
+++			skb->mark = xfrm_smark_get(skb->mark, x);
+++			err = ops->xdo_dev_packet_xmit(sk, skb, x);
+++		} else {
+++			/* Exclusive direct xmit for tunnel mode, as some
+++			 * filtering or matching rules may apply in transport
+++			 * mode. Locally generated packets also require the normal
+++			 * XFRM path for L2 header setup, as the hardware needs the
+++			 * L2 header to match for encryption.
+++			 */
+++			if (x->props.mode == XFRM_MODE_TUNNEL && !skb->sk)
+++				err = xfrm_dev_direct_output(sk, x, skb);
+++			else
+++				err = xfrm_output_resume(sk, skb, 0);
+++		}
+++		xfrm_dev_offload_put(x);
+++
+++		return err;
+++
+++state_invalid:
+++		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
+++		kfree_skb(skb);
+++		return -EINVAL;
+++#else
++ 		if (x->props.mode == XFRM_MODE_TUNNEL && !skb->sk)
++ 			return xfrm_dev_direct_output(sk, x, skb);
++ 
++ 		return xfrm_output_resume(sk, skb, 0);
+++#endif
++ 	}
++ 
++ 	secpath_reset(skb);
++@@ -810,8 +869,16 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
++ 			goto out;
++ 		}
++ 
++-		if (x->xso.dev && x->xso.dev->features & NETIF_F_HW_ESP_TX_CSUM)
++-			goto out;
+++		if (xfrm_dev_offload_get(x)) {
+++			struct net_device *dev = READ_ONCE(x->xso.dev);
+++			bool esp_tx_csum;
+++
+++			esp_tx_csum = READ_ONCE(dev->features) &
+++				      NETIF_F_HW_ESP_TX_CSUM;
+++			xfrm_dev_offload_put(x);
+++			if (esp_tx_csum)
+++				goto out;
+++		}
++ 	} else {
++ 		if (skb_is_gso(skb))
++ 			return xfrm_output_gso(net, sk, skb);
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: notify packet offload managers of policy changes
++
++Notify packet-offload managers when policy state changes and track unsafe policies.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_policy.c | 105 ++++++++++++++++++++++++++++++++++++++---
++ 1 file changed, 99 insertions(+), 6 deletions(-)
++
++diff --git a/net/xfrm/xfrm_policy.c b/net/xfrm/xfrm_policy.c
++index 4dad1f8..6aa6129 100644
++--- a/net/xfrm/xfrm_policy.c
+++++ b/net/xfrm/xfrm_policy.c
++@@ -1569,6 +1569,32 @@ static struct xfrm_policy *xfrm_policy_insert_list(struct hlist_head *chain,
++ 	return delpol;
++ }
++ 
+++/* Called with net->xfrm.xfrm_policy_lock held. */
+++static bool xfrm_dev_policy_offload_active(struct xfrm_policy *policy)
+++{
+++	lockdep_assert_held(&xp_net(policy)->xfrm.xfrm_policy_lock);
+++
+++#ifdef CONFIG_XFRM_OFFLOAD
+++	const struct xfrmdev_ops *ops;
+++	struct net_device *dev;
+++
+++	if (policy->xdo.type != XFRM_DEV_OFFLOAD_PACKET)
+++		return true;
+++
+++	dev = READ_ONCE(policy->xdo.dev);
+++	if (!dev || !net_eq(dev_net(dev), xp_net(policy)) ||
+++	    READ_ONCE(dev->reg_state) != NETREG_REGISTERED ||
+++	    READ_ONCE(dev->moving_ns) ||
+++	    !(READ_ONCE(dev->features) & NETIF_F_HW_ESP))
+++		return false;
+++
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	return ops && ops->xdo_dev_policy_add;
+++#else
+++	return true;
+++#endif
+++}
+++
++ int xfrm_policy_insert(int dir, struct xfrm_policy *policy, int excl)
++ {
++ 	struct net *net = xp_net(policy);
++@@ -1579,6 +1605,11 @@ int xfrm_policy_insert(int dir, struct xfrm_policy *policy, int excl)
++ 	policy->mark.v &= policy->mark.m;
++ 
++ 	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	if (!xfrm_dev_policy_offload_active(policy)) {
+++		spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
+++		return -ENODEV;
+++	}
+++	xfrm_policy_change_begin(net);
++ 	chain = policy_hash_bysel(net, &policy->selector, policy->family, dir);
++ 	if (chain)
++ 		delpol = xfrm_policy_insert_list(chain, policy, excl);
++@@ -1586,6 +1617,7 @@ int xfrm_policy_insert(int dir, struct xfrm_policy *policy, int excl)
++ 		delpol = xfrm_policy_inexact_insert(policy, dir, excl);
++ 
++ 	if (IS_ERR(delpol)) {
+++		xfrm_policy_change_end(net);
++ 		spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 		return PTR_ERR(delpol);
++ 	}
++@@ -1608,6 +1640,7 @@ int xfrm_policy_insert(int dir, struct xfrm_policy *policy, int excl)
++ 	policy->curlft.use_time = 0;
++ 	if (!mod_timer(&policy->timer, jiffies + HZ))
++ 		xfrm_pol_hold(policy);
+++	xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 
++ 	if (delpol)
++@@ -1697,12 +1730,15 @@ xfrm_policy_bysel_ctx(struct net *net, const struct xfrm_mark *mark, u32 if_id,
++ 				spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 				return pol;
++ 			}
+++			xfrm_policy_change_begin(net);
++ 			__xfrm_policy_unlink(pol, dir);
++ 		}
++ 		ret = pol;
++ 	}
++ 	if (bin && delete)
++ 		__xfrm_policy_inexact_prune_bin(bin, false);
+++	if (ret && delete)
+++		xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 
++ 	if (ret && delete)
++@@ -1737,12 +1773,15 @@ xfrm_policy_byid(struct net *net, const struct xfrm_mark *mark, u32 if_id,
++ 					spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 					return pol;
++ 				}
+++				xfrm_policy_change_begin(net);
++ 				__xfrm_policy_unlink(pol, dir);
++ 			}
++ 			ret = pol;
++ 			break;
++ 		}
++ 	}
+++	if (ret && delete)
+++		xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 
++ 	if (ret && delete)
++@@ -1811,6 +1850,7 @@ static inline int xfrm_dev_policy_flush_secctx_check(struct net *net,
++ 
++ int xfrm_policy_flush(struct net *net, u8 type, bool task_valid)
++ {
+++	bool changing = false;
++ 	int dir, err = 0, cnt = 0;
++ 	struct xfrm_policy *pol;
++ 
++@@ -1819,6 +1859,8 @@ int xfrm_policy_flush(struct net *net, u8 type, bool task_valid)
++ 	err = xfrm_policy_flush_secctx_check(net, type, task_valid);
++ 	if (err)
++ 		goto out;
+++	xfrm_policy_change_begin(net);
+++	changing = true;
++ 
++ again:
++ 	list_for_each_entry(pol, &net->xfrm.policy_all, walk.all) {
++@@ -1843,6 +1885,8 @@ int xfrm_policy_flush(struct net *net, u8 type, bool task_valid)
++ 	else
++ 		err = -ESRCH;
++ out:
+++	if (changing)
+++		xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 	return err;
++ }
++@@ -1851,6 +1895,7 @@ EXPORT_SYMBOL(xfrm_policy_flush);
++ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
++ 			  bool task_valid)
++ {
+++	bool changing = false;
++ 	int dir, err = 0, cnt = 0;
++ 	struct xfrm_policy *pol;
++ 
++@@ -1859,6 +1904,8 @@ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
++ 	err = xfrm_dev_policy_flush_secctx_check(net, dev, task_valid);
++ 	if (err)
++ 		goto out;
+++	xfrm_policy_change_begin(net);
+++	changing = true;
++ 
++ again:
++ 	list_for_each_entry(pol, &net->xfrm.policy_all, walk.all) {
++@@ -1883,6 +1930,8 @@ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
++ 	else
++ 		err = -ESRCH;
++ out:
+++	if (changing)
+++		xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 	return err;
++ }
++@@ -2322,6 +2371,9 @@ static void __xfrm_policy_link(struct xfrm_policy *pol, int dir)
++ 
++ 	list_add(&pol->walk.all, &net->xfrm.policy_all);
++ 	WRITE_ONCE(net->xfrm.policy_count[dir], net->xfrm.policy_count[dir] + 1);
+++	if (dir < XFRM_POLICY_MAX &&
+++	    (pol->mark.m || pol->if_id || pol->security))
+++		atomic_inc(&net->xfrm.policy_flowtable_unsafe);
++ 	xfrm_pol_hold(pol);
++ }
++ 
++@@ -2341,6 +2393,9 @@ static struct xfrm_policy *__xfrm_policy_unlink(struct xfrm_policy *pol,
++ 
++ 	list_del_init(&pol->walk.all);
++ 	WRITE_ONCE(net->xfrm.policy_count[dir], net->xfrm.policy_count[dir] - 1);
+++	if (dir < XFRM_POLICY_MAX &&
+++	    (pol->mark.m || pol->if_id || pol->security))
+++		atomic_dec(&net->xfrm.policy_flowtable_unsafe);
++ 
++ 	return pol;
++ }
++@@ -2358,9 +2413,16 @@ static void xfrm_sk_policy_unlink(struct xfrm_policy *pol, int dir)
++ int xfrm_policy_delete(struct xfrm_policy *pol, int dir)
++ {
++ 	struct net *net = xp_net(pol);
+++	bool changing = false;
++ 
++ 	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	if (dir < XFRM_POLICY_MAX && !list_empty(&pol->walk.all)) {
+++		xfrm_policy_change_begin(net);
+++		changing = true;
+++	}
++ 	pol = __xfrm_policy_unlink(pol, dir);
+++	if (changing)
+++		xfrm_policy_change_end(net);
++ 	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 	if (pol) {
++ 		xfrm_policy_kill(pol);
++@@ -3681,6 +3743,7 @@ int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb,
++ 	int xerr_idx = -1;
++ 	const struct xfrm_if_cb *ifcb;
++ 	struct sec_path *sp;
+++	u32 policy_genid;
++ 	u32 if_id = 0;
++ 
++ 	rcu_read_lock();
++@@ -3695,6 +3758,7 @@ int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb,
++ 		}
++ 	}
++ 	rcu_read_unlock();
+++	policy_genid = xfrm_policy_generation(net);
++ 
++ 	reverse = dir & ~XFRM_POLICY_MASK;
++ 	dir &= XFRM_POLICY_MASK;
++@@ -3795,6 +3859,7 @@ int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb,
++ 		struct xfrm_tmpl *tp[XFRM_MAX_DEPTH];
++ 		struct xfrm_tmpl *stp[XFRM_MAX_DEPTH];
++ 		struct xfrm_tmpl **tpp = tp;
+++		bool policy_flowtable = xfrm_policy_flowtable_eligible(net);
++ 		int i, k = 0;
++ 		int ti = 0;
++ 
++@@ -3855,7 +3920,22 @@ int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb,
++ 
++ out:
++ 		xfrm_pols_put(pols, npols);
++-		sp->verified_cnt = k;
+++		if (sp != &dummy) {
+++			sp->verified_cnt = k;
+++			if (policy_genid == xfrm_policy_generation(net)) {
+++				if (sp->policy_checked &&
+++				    (sp->policy_genid != policy_genid ||
+++				     !sp->policy_flowtable))
+++					policy_flowtable = false;
+++				sp->policy_checked = 1;
+++				sp->policy_flowtable = policy_flowtable;
+++				sp->policy_genid = policy_genid;
+++			} else {
+++				sp->policy_checked = 1;
+++				sp->policy_flowtable = 0;
+++				sp->policy_genid = 0;
+++			}
+++		}
++ 
++ 		return 1;
++ 	}
++@@ -4314,6 +4394,9 @@ static int __net_init xfrm_net_init(struct net *net)
++ 	/* Initialize the per-net locks here */
++ 	spin_lock_init(&net->xfrm.xfrm_state_lock);
++ 	spin_lock_init(&net->xfrm.xfrm_policy_lock);
+++	atomic_set(&net->xfrm.policy_genid, 1);
+++	atomic_set(&net->xfrm.policy_change_count, 0);
+++	atomic_set(&net->xfrm.policy_flowtable_unsafe, 0);
++ 	seqcount_spinlock_init(&net->xfrm.xfrm_policy_hash_generation, &net->xfrm.xfrm_policy_lock);
++ 	mutex_init(&net->xfrm.xfrm_cfg_mutex);
++ 	net->xfrm.policy_default[XFRM_POLICY_IN] = XFRM_USERPOLICY_ACCEPT;
++@@ -4563,15 +4646,21 @@ static int xfrm_policy_migrate(struct xfrm_policy *pol,
++ 			       struct xfrm_migrate *m, int num_migrate,
++ 			       struct netlink_ext_ack *extack)
++ {
+++	struct net *net = xp_net(pol);
++ 	struct xfrm_migrate *mp;
+++	int err = 0;
++ 	int i, j, n = 0;
++ 
+++	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_change_begin(net);
+++	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
+++
++ 	write_lock_bh(&pol->lock);
++ 	if (unlikely(pol->walk.dead)) {
++ 		/* target policy has been deleted */
++ 		NL_SET_ERR_MSG(extack, "Target policy not found");
++-		write_unlock_bh(&pol->lock);
++-		return -ENOENT;
+++		err = -ENOENT;
+++		goto unlock;
++ 	}
++ 
++ 	for (i = 0; i < pol->xfrm_nr; i++) {
++@@ -4594,12 +4683,16 @@ static int xfrm_policy_migrate(struct xfrm_policy *pol,
++ 		}
++ 	}
++ 
+++	if (!n)
+++		err = -ENODATA;
+++unlock:
++ 	write_unlock_bh(&pol->lock);
++ 
++-	if (!n)
++-		return -ENODATA;
+++	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_change_end(net);
+++	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
++ 
++-	return 0;
+++	return err;
++ }
++ 
++ static int xfrm_migrate_check(const struct xfrm_migrate *m, int num_migrate,
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: harden packet offload state lifetime
++
++Keep packet-offloaded XFRM state lifetime and teardown synchronized.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_state.c | 359 +++++++++++++++++++++++++++++++++++-------
++ 1 file changed, 300 insertions(+), 59 deletions(-)
++
++diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
++index 89daad5..d63d689 100644
++--- a/net/xfrm/xfrm_state.c
+++++ b/net/xfrm/xfrm_state.c
++@@ -15,6 +15,7 @@
++  */
++ 
++ #include <linux/compat.h>
+++#include <linux/wait_bit.h>
++ #include <linux/workqueue.h>
++ #include <net/xfrm.h>
++ #include <linux/pfkeyv2.h>
++@@ -58,6 +59,33 @@ static inline bool xfrm_state_hold_rcu(struct xfrm_state __rcu *x)
++ 	return refcount_inc_not_zero(&x->refcnt);
++ }
++ 
+++/* Called with net->xfrm.xfrm_state_lock held. */
+++static bool xfrm_dev_state_offload_active(struct xfrm_state *x)
+++{
+++	lockdep_assert_held(&xs_net(x)->xfrm.xfrm_state_lock);
+++
+++#ifdef CONFIG_XFRM_OFFLOAD
+++	const struct xfrmdev_ops *ops;
+++	struct net_device *dev;
+++
+++	if (x->xso.type != XFRM_DEV_OFFLOAD_PACKET)
+++		return true;
+++
+++	dev = READ_ONCE(x->xso.dev);
+++	if (!dev || !net_eq(dev_net(dev), xs_net(x)) ||
+++	    READ_ONCE(dev->reg_state) != NETREG_REGISTERED ||
+++	    READ_ONCE(dev->moving_ns) ||
+++	    !(READ_ONCE(dev->features) & NETIF_F_HW_ESP))
+++		return false;
+++
+++	ops = READ_ONCE(dev->xfrmdev_ops);
+++	return ops && ops == READ_ONCE(x->xso.state_ops) &&
+++	       ops->xdo_dev_state_add;
+++#else
+++	return true;
+++#endif
+++}
+++
++ static inline unsigned int xfrm_dst_hash(struct net *net,
++ 					 const xfrm_address_t *daddr,
++ 					 const xfrm_address_t *saddr,
++@@ -737,6 +765,7 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
++ 	if (x) {
++ 		write_pnet(&x->xs_net, net);
++ 		refcount_set(&x->refcnt, 1);
+++		atomic_set(&x->xso.active_refs, 0);
++ 		atomic_set(&x->tunnel_users, 0);
++ 		INIT_LIST_HEAD(&x->km.all);
++ 		INIT_HLIST_NODE(&x->state_cache);
++@@ -763,37 +792,93 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
++ EXPORT_SYMBOL(xfrm_state_alloc);
++ 
++ #ifdef CONFIG_XFRM_OFFLOAD
++-void xfrm_dev_state_delete(struct xfrm_state *x)
+++static struct net_device *
+++xfrm_dev_state_delete_prepare(struct xfrm_state *x,
+++			      const struct xfrmdev_ops **ops)
++ {
++ 	struct xfrm_dev_offload *xso = &x->xso;
++-	struct net_device *dev = READ_ONCE(xso->dev);
+++	struct net_device *dev;
+++
+++	if (WARN_ON_ONCE(!atomic_inc_unless_negative(&xso->active_refs)))
+++		return NULL;
+++	xfrm_state_hold(x);
+++	dev = READ_ONCE(xso->dev);
+++	if (!dev) {
+++		xfrm_dev_offload_put(x);
+++		return NULL;
+++	}
++ 
++-	if (dev) {
++-		dev->xfrmdev_ops->xdo_dev_state_delete(dev, x);
++-		spin_lock_bh(&xfrm_state_dev_gc_lock);
++-		hlist_add_head(&x->dev_gclist, &xfrm_state_dev_gc_list);
+++	/* Keep device-private state alive until its delete callback returns. */
+++	spin_lock_bh(&xfrm_state_dev_gc_lock);
+++	if (!hlist_unhashed(&x->dev_gclist)) {
++ 		spin_unlock_bh(&xfrm_state_dev_gc_lock);
+++		xfrm_dev_offload_put(x);
+++		return NULL;
++ 	}
+++	hlist_add_head(&x->dev_gclist, &xfrm_state_dev_gc_list);
+++	spin_unlock_bh(&xfrm_state_dev_gc_lock);
+++	*ops = READ_ONCE(xso->state_ops);
+++
+++	return dev;
+++}
+++
+++static void xfrm_dev_state_delete_finish(struct xfrm_state *x,
+++					 struct net_device *dev,
+++					 const struct xfrmdev_ops *ops)
+++{
+++	if (ops && ops->xdo_dev_state_delete)
+++		ops->xdo_dev_state_delete(dev, x);
+++	xfrm_dev_offload_put(x);
+++}
+++
+++void xfrm_dev_state_delete(struct xfrm_state *x)
+++{
+++	const struct xfrmdev_ops *ops = NULL;
+++	struct net_device *dev;
+++
+++	dev = xfrm_dev_state_delete_prepare(x, &ops);
+++	if (dev)
+++		xfrm_dev_state_delete_finish(x, dev, ops);
++ }
++ EXPORT_SYMBOL_GPL(xfrm_dev_state_delete);
++ 
++ void xfrm_dev_state_free(struct xfrm_state *x)
++ {
+++	const struct xfrmdev_ops *ops;
++ 	struct xfrm_dev_offload *xso = &x->xso;
++-	struct net_device *dev = READ_ONCE(xso->dev);
+++	struct net_device *dev;
++ 
++-	if (dev && dev->xfrmdev_ops) {
++-		spin_lock_bh(&xfrm_state_dev_gc_lock);
++-		if (!hlist_unhashed(&x->dev_gclist))
++-			hlist_del(&x->dev_gclist);
++-		spin_unlock_bh(&xfrm_state_dev_gc_lock);
+++	/* Negative active_refs grants one caller exclusive free ownership.
+++	 * Contenders wait for the owner to finish before checking xso.dev again.
+++	 */
+++	for (;;) {
+++		if (!atomic_cmpxchg(&xso->active_refs, 0, -1))
+++			break;
++ 
++-		if (dev->xfrmdev_ops->xdo_dev_state_free)
++-			dev->xfrmdev_ops->xdo_dev_state_free(dev, x);
++-		WRITE_ONCE(xso->dev, NULL);
++-		xso->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
++-		netdev_put(dev, &xso->dev_tracker);
+++		wait_var_event(&xso->active_refs,
+++			       !atomic_read(&xso->active_refs));
++ 	}
+++
+++	dev = READ_ONCE(xso->dev);
+++	if (!dev)
+++		goto release;
+++
+++	ops = READ_ONCE(xso->state_ops);
+++	if (ops && ops->xdo_dev_state_free)
+++		ops->xdo_dev_state_free(dev, x);
+++
+++	spin_lock_bh(&xfrm_state_dev_gc_lock);
+++	if (!hlist_unhashed(&x->dev_gclist))
+++		hlist_del_init(&x->dev_gclist);
+++	WRITE_ONCE(xso->dev, NULL);
+++	WRITE_ONCE(xso->state_ops, NULL);
+++	xso->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
+++	spin_unlock_bh(&xfrm_state_dev_gc_lock);
+++	netdev_put(dev, &xso->dev_tracker);
+++
+++release:
+++	atomic_set_release(&xso->active_refs, 0);
+++	wake_up_var(&xso->active_refs);
++ }
++ #endif
++ 
++@@ -811,6 +896,10 @@ EXPORT_SYMBOL(__xfrm_state_destroy);
++ int __xfrm_state_delete(struct xfrm_state *x)
++ {
++ 	struct net *net = xs_net(x);
+++#ifdef CONFIG_XFRM_OFFLOAD
+++	const struct xfrmdev_ops *delete_ops = NULL;
+++	struct net_device *delete_dev = NULL;
+++#endif
++ 	int err = -ESRCH;
++ 
++ 	if (x->km.state != XFRM_STATE_DEAD) {
++@@ -831,9 +920,18 @@ int __xfrm_state_delete(struct xfrm_state *x)
++ 			hlist_del_init_rcu(&x->byspi);
++ 		net->xfrm.state_num--;
++ 		xfrm_nat_keepalive_state_updated(x);
+++#ifdef CONFIG_XFRM_OFFLOAD
+++		/* Device teardown must find the state in either the SAD or the
+++		 * device-GC list, with no gap between the two.
+++		 */
+++		delete_dev = xfrm_dev_state_delete_prepare(x, &delete_ops);
+++#endif
++ 		spin_unlock(&net->xfrm.xfrm_state_lock);
++ 
++-		xfrm_dev_state_delete(x);
+++#ifdef CONFIG_XFRM_OFFLOAD
+++		if (delete_dev)
+++			xfrm_dev_state_delete_finish(x, delete_dev, delete_ops);
+++#endif
++ 
++ 		xfrm_state_delete_tunnel(x);
++ 
++@@ -1006,8 +1104,15 @@ int xfrm_dev_state_flush(struct net *net, struct net_device *dev, bool task_vali
++ 		xso = &x->xso;
++ 
++ 		if (xso->dev == dev) {
+++			if (!xfrm_state_hold_rcu(x)) {
+++				spin_unlock_bh(&xfrm_state_dev_gc_lock);
+++				xfrm_flush_gc();
+++				spin_lock_bh(&xfrm_state_dev_gc_lock);
+++				goto restart_gc;
+++			}
++ 			spin_unlock_bh(&xfrm_state_dev_gc_lock);
++ 			xfrm_dev_state_free(x);
+++			xfrm_state_put(x);
++ 			spin_lock_bh(&xfrm_state_dev_gc_lock);
++ 			goto restart_gc;
++ 		}
++@@ -1360,6 +1465,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
++ {
++ 	static xfrm_address_t saddr_wildcard = { };
++ 	struct xfrm_hash_state_ptrs state_ptrs;
+++	struct hlist_head *state_list;
++ 	struct net *net = xp_net(pol);
++ 	unsigned int h, h_wildcard;
++ 	struct xfrm_state *x, *x0, *to_put;
++@@ -1540,6 +1646,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
++ 		}
++ #ifdef CONFIG_XFRM_OFFLOAD
++ 		if (pol->xdo.type == XFRM_DEV_OFFLOAD_PACKET) {
+++			const struct xfrmdev_ops *ops;
++ 			struct xfrm_dev_offload *xdo = &pol->xdo;
++ 			struct xfrm_dev_offload *xso = &x->xso;
++ 			struct net_device *dev = xdo->dev;
++@@ -1547,12 +1654,19 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
++ 			xso->type = XFRM_DEV_OFFLOAD_PACKET;
++ 			xso->dir = xdo->dir;
++ 			xso->dev = dev;
+++			xso->ifindex = dev->ifindex;
++ 			xso->flags = XFRM_DEV_OFFLOAD_FLAG_ACQ;
++ 			netdev_hold(dev, &xso->dev_tracker, GFP_ATOMIC);
++-			error = dev->xfrmdev_ops->xdo_dev_state_add(dev, x,
++-								    NULL);
+++			ops = READ_ONCE(dev->xfrmdev_ops);
+++			if (!ops || !ops->xdo_dev_state_add) {
+++				error = -ENODEV;
+++			} else {
+++				xso->state_ops = ops;
+++				error = ops->xdo_dev_state_add(dev, x, NULL);
+++			}
++ 			if (error) {
++ 				xso->dir = 0;
+++				xso->state_ops = NULL;
++ 				netdev_put(dev, &xso->dev_tracker);
++ 				xso->dev = NULL;
++ 				xso->type = XFRM_DEV_OFFLOAD_UNSPECIFIED;
++@@ -1563,52 +1677,68 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
++ 			}
++ 		}
++ #endif
++-		if (km_query(x, tmpl, pol) == 0) {
+++		error = km_query(x, tmpl, pol) ? -ESRCH : 0;
+++		if (!error) {
++ 			spin_lock_bh(&net->xfrm.xfrm_state_lock);
++-			x->km.state = XFRM_STATE_ACQ;
++-			x->dir = XFRM_SA_DIR_OUT;
++-			list_add(&x->km.all, &net->xfrm.state_all);
++-			h = xfrm_dst_hash(net, daddr, saddr, tmpl->reqid, encap_family);
++-			XFRM_STATE_INSERT(bydst, &x->bydst,
++-					  net->xfrm.state_bydst + h,
++-					  x->xso.type);
++-			h = xfrm_src_hash(net, daddr, saddr, encap_family);
++-			XFRM_STATE_INSERT(bysrc, &x->bysrc,
++-					  net->xfrm.state_bysrc + h,
++-					  x->xso.type);
++-			INIT_HLIST_NODE(&x->state_cache);
++-			if (x->id.spi) {
++-				h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto, encap_family);
++-				XFRM_STATE_INSERT(byspi, &x->byspi,
++-						  net->xfrm.state_byspi + h,
+++			if (!xfrm_dev_state_offload_active(x)) {
+++				error = -ENODEV;
+++			} else {
+++				x->km.state = XFRM_STATE_ACQ;
+++				x->dir = XFRM_SA_DIR_OUT;
+++				list_add(&x->km.all, &net->xfrm.state_all);
+++				h = xfrm_dst_hash(net, daddr, saddr,
+++						  tmpl->reqid, encap_family);
+++				state_list = net->xfrm.state_bydst + h;
+++				XFRM_STATE_INSERT(bydst, &x->bydst,
+++						  state_list,
++ 						  x->xso.type);
++-			}
++-			if (x->km.seq) {
++-				h = xfrm_seq_hash(net, x->km.seq);
++-				XFRM_STATE_INSERT(byseq, &x->byseq,
++-						  net->xfrm.state_byseq + h,
+++				h = xfrm_src_hash(net, daddr, saddr,
+++						  encap_family);
+++				state_list = net->xfrm.state_bysrc + h;
+++				XFRM_STATE_INSERT(bysrc, &x->bysrc,
+++						  state_list,
++ 						  x->xso.type);
+++				INIT_HLIST_NODE(&x->state_cache);
+++				if (x->id.spi) {
+++					h = xfrm_spi_hash(net, &x->id.daddr,
+++							  x->id.spi,
+++							  x->id.proto,
+++							  encap_family);
+++					state_list = net->xfrm.state_byspi + h;
+++					XFRM_STATE_INSERT(byspi, &x->byspi,
+++							  state_list,
+++							  x->xso.type);
+++				}
+++				if (x->km.seq) {
+++					h = xfrm_seq_hash(net, x->km.seq);
+++					state_list = net->xfrm.state_byseq + h;
+++					XFRM_STATE_INSERT(byseq, &x->byseq,
+++							  state_list,
+++							  x->xso.type);
+++				}
+++				x->lft.hard_add_expires_seconds =
+++					net->xfrm.sysctl_acq_expires;
+++				hrtimer_start(&x->mtimer,
+++					      ktime_set(net->xfrm.sysctl_acq_expires,
+++							0),
+++					      HRTIMER_MODE_REL_SOFT);
+++				net->xfrm.state_num++;
+++				xfrm_hash_grow_check(net, !!x->bydst.next);
++ 			}
++-			x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
++-			hrtimer_start(&x->mtimer,
++-				      ktime_set(net->xfrm.sysctl_acq_expires, 0),
++-				      HRTIMER_MODE_REL_SOFT);
++-			net->xfrm.state_num++;
++-			xfrm_hash_grow_check(net, x->bydst.next != NULL);
++ 			spin_unlock_bh(&net->xfrm.xfrm_state_lock);
++-		} else {
+++		}
+++		if (error) {
++ #ifdef CONFIG_XFRM_OFFLOAD
++ 			struct xfrm_dev_offload *xso = &x->xso;
++ 
++-			if (xso->type == XFRM_DEV_OFFLOAD_PACKET) {
+++			x->km.state = XFRM_STATE_DEAD;
+++			if (xso->type == XFRM_DEV_OFFLOAD_PACKET)
++ 				xfrm_dev_state_delete(x);
++-				xfrm_dev_state_free(x);
++-			}
++-#endif
+++#else
++ 			x->km.state = XFRM_STATE_DEAD;
+++#endif
++ 			to_put = x;
++ 			x = NULL;
++-			error = -ESRCH;
++ 		}
++ 
++ 		/* Use the already installed 'fallback' while the CPU-specific
++@@ -1903,8 +2033,17 @@ int xfrm_state_add(struct xfrm_state *x)
++ 	family = x->props.family;
++ 
++ 	to_put = NULL;
+++	x1 = NULL;
++ 
++ 	spin_lock_bh(&net->xfrm.xfrm_state_lock);
+++	if (x->km.state == XFRM_STATE_DEAD) {
+++		err = -EINVAL;
+++		goto out;
+++	}
+++	if (!xfrm_dev_state_offload_active(x)) {
+++		err = -ENODEV;
+++		goto out;
+++	}
++ 
++ 	x1 = __xfrm_state_locate(x, use_spi, family);
++ 	if (x1) {
++@@ -1916,8 +2055,9 @@ int xfrm_state_add(struct xfrm_state *x)
++ 
++ 	if (use_spi && x->km.seq) {
++ 		x1 = __xfrm_find_acq_byseq(net, mark, x->km.seq, x->pcpu_num);
++-		if (x1 && ((x1->id.proto != x->id.proto) ||
++-		    !xfrm_addr_equal(&x1->id.daddr, &x->id.daddr, family))) {
+++		if (x1 && (x1->id.proto != x->id.proto ||
+++			   !xfrm_addr_equal(&x1->id.daddr, &x->id.daddr,
+++					    family))) {
++ 			to_put = x1;
++ 			x1 = NULL;
++ 		}
++@@ -2148,6 +2288,7 @@ struct xfrm_state *xfrm_state_migrate(struct xfrm_state *x,
++ 				      struct netlink_ext_ack *extack)
++ {
++ 	struct xfrm_state *xc;
+++	int err;
++ 
++ 	xc = xfrm_state_clone_and_setup(x, encap, m);
++ 	if (!xc)
++@@ -2164,11 +2305,21 @@ struct xfrm_state *xfrm_state_migrate(struct xfrm_state *x,
++ 	if (xfrm_addr_equal(&x->id.daddr, &m->new_daddr, m->new_family)) {
++ 		/* a care is needed when the destination address of the
++ 		   state is to be updated as it is a part of triplet */
++-		xfrm_state_insert(xc);
+++		spin_lock_bh(&net->xfrm.xfrm_state_lock);
+++		if (xc->km.state != XFRM_STATE_DEAD &&
+++		    xfrm_dev_state_offload_active(xc)) {
+++			__xfrm_state_bump_genids(xc);
+++			__xfrm_state_insert(xc);
+++			err = 0;
+++		} else {
+++			err = -ENODEV;
+++		}
+++		spin_unlock_bh(&net->xfrm.xfrm_state_lock);
++ 	} else {
++-		if (xfrm_state_add(xc) < 0)
++-			goto error_add;
+++		err = xfrm_state_add(xc);
++ 	}
+++	if (err)
+++		goto error_add;
++ 
++ 	return xc;
++ error_add:
++@@ -2190,8 +2341,17 @@ int xfrm_state_update(struct xfrm_state *x)
++ 	struct net *net = xs_net(x);
++ 
++ 	to_put = NULL;
+++	x1 = NULL;
++ 
++ 	spin_lock_bh(&net->xfrm.xfrm_state_lock);
+++	if (x->km.state == XFRM_STATE_DEAD) {
+++		err = -EINVAL;
+++		goto out;
+++	}
+++	if (!xfrm_dev_state_offload_active(x)) {
+++		err = -ENODEV;
+++		goto out;
+++	}
++ 	x1 = __xfrm_state_locate(x, use_spi, x->props.family);
++ 
++ 	err = -ESRCH;
++@@ -2204,6 +2364,17 @@ int xfrm_state_update(struct xfrm_state *x)
++ 		goto out;
++ 	}
++ 
+++	/* Packet-offload state lives in device-private hardware and there is no
+++	 * update callback to keep it in sync with in-place changes below. A
+++	 * stale hardware state can also retain autonomous forwarding entries.
+++	 */
+++	if (x1->km.state != XFRM_STATE_ACQ &&
+++	    x1->xso.type == XFRM_DEV_OFFLOAD_PACKET) {
+++		to_put = x1;
+++		err = -EOPNOTSUPP;
+++		goto out;
+++	}
+++
++ 	if (x1->km.state == XFRM_STATE_ACQ) {
++ 		if (x->dir && x1->dir != x->dir) {
++ 			to_put = x1;
++@@ -2314,6 +2485,17 @@ int xfrm_state_check_expire(struct xfrm_state *x)
++ }
++ EXPORT_SYMBOL(xfrm_state_check_expire);
++ 
+++void xfrm_state_expire(struct xfrm_state *x)
+++{
+++	spin_lock_bh(&x->lock);
+++	if (x->km.state == XFRM_STATE_VALID) {
+++		x->km.state = XFRM_STATE_EXPIRED;
+++		hrtimer_start(&x->mtimer, 0, HRTIMER_MODE_REL_SOFT);
+++	}
+++	spin_unlock_bh(&x->lock);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_state_expire);
+++
++ void xfrm_state_update_stats(struct net *net)
++ {
++ 	struct xfrm_state *x;
++@@ -2740,6 +2922,62 @@ static void xfrm_replay_timer_handler(struct timer_list *t)
++ 
++ static LIST_HEAD(xfrm_km_list);
++ 
+++u32 xfrm_policy_generation(const struct net *net)
+++{
+++	return atomic_read(&net->xfrm.policy_genid);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_policy_generation);
+++
+++bool xfrm_policy_flowtable_eligible(const struct net *net)
+++{
+++	return !atomic_read(&net->xfrm.policy_change_count) &&
+++	       !atomic_read(&net->xfrm.policy_flowtable_unsafe);
+++}
+++EXPORT_SYMBOL_GPL(xfrm_policy_flowtable_eligible);
+++
+++static void xfrm_policy_generation_advance(struct net *net)
+++{
+++	/* Generation zero means that no authenticated policy snapshot is
+++	 * attached to a flow, so skip it when the counter eventually wraps.
+++	 */
+++	if (!atomic_inc_return(&net->xfrm.policy_genid))
+++		atomic_inc(&net->xfrm.policy_genid);
+++}
+++
+++void xfrm_policy_change_begin(struct net *net)
+++{
+++	struct xfrm_mgr *km;
+++
+++	lockdep_assert_held(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_generation_advance(net);
+++	if (atomic_inc_return(&net->xfrm.policy_change_count) != 1)
+++		return;
+++
+++	rcu_read_lock();
+++	list_for_each_entry_rcu(km, &xfrm_km_list, list)
+++		if (km->policy_change_begin)
+++			km->policy_change_begin(net);
+++	rcu_read_unlock();
+++}
+++EXPORT_SYMBOL_GPL(xfrm_policy_change_begin);
+++
+++void xfrm_policy_change_end(struct net *net)
+++{
+++	struct xfrm_mgr *km;
+++
+++	lockdep_assert_held(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_generation_advance(net);
+++	if (!atomic_dec_and_test(&net->xfrm.policy_change_count))
+++		return;
+++
+++	rcu_read_lock();
+++	list_for_each_entry_rcu(km, &xfrm_km_list, list)
+++		if (km->policy_changed)
+++			km->policy_changed(net);
+++	rcu_read_unlock();
+++}
+++EXPORT_SYMBOL_GPL(xfrm_policy_change_end);
+++
++ void km_policy_notify(struct xfrm_policy *xp, int dir, const struct km_event *c)
++ {
++ 	struct xfrm_mgr *km;
++@@ -3002,6 +3240,9 @@ int xfrm_user_policy(struct sock *sk, int optname, sockptr_t optval, int optlen)
++ 	err = -EINVAL;
++ 	rcu_read_lock();
++ 	list_for_each_entry_rcu(km, &xfrm_km_list, list) {
+++		if (!km->compile_policy)
+++			continue;
+++
++ 		pol = km->compile_policy(sk, optname, data,
++ 					 optlen, &err);
++ 		if (err >= 0)
++
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Jihong Min <hurryman2212@gmail.com>
++Date: Tue, 4 Aug 2026 16:29:39 +0900
++Subject: [PATCH] xfrm: preserve packet offload ownership on user updates
++
++Preserve packet-offload ownership while userspace updates XFRM state.
++
++Assisted-by: Codex:gpt-5.6
++Signed-off-by: Jihong Min <hurryman2212@gmail.com>
++---
++ net/xfrm/xfrm_user.c | 9 +++++++++
++ 1 file changed, 9 insertions(+)
++
++diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
++index 9ad6619..726440b 100644
++--- a/net/xfrm/xfrm_user.c
+++++ b/net/xfrm/xfrm_user.c
++@@ -1000,6 +1000,7 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
++ 
++ error:
++ 	x->km.state = XFRM_STATE_DEAD;
+++	xfrm_dev_state_delete(x);
++ 	xfrm_state_put(x);
++ error_no_put:
++ 	*errp = err;
++@@ -2501,6 +2502,10 @@ static int xfrm_set_default(struct sk_buff *skb, struct nlmsghdr *nlh,
++ 	struct net *net = sock_net(skb->sk);
++ 	struct xfrm_userpolicy_default *up = nlmsg_data(nlh);
++ 
+++	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_change_begin(net);
+++	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
+++
++ 	if (xfrm_userpolicy_is_valid(up->in))
++ 		WRITE_ONCE(net->xfrm.policy_default[XFRM_POLICY_IN], up->in);
++ 
++@@ -2512,6 +2517,10 @@ static int xfrm_set_default(struct sk_buff *skb, struct nlmsghdr *nlh,
++ 
++ 	rt_genid_bump_all(net);
++ 
+++	spin_lock_bh(&net->xfrm.xfrm_policy_lock);
+++	xfrm_policy_change_end(net);
+++	spin_unlock_bh(&net->xfrm.xfrm_policy_lock);
+++
++ 	xfrm_notify_userpolicy(net);
++ 	return 0;
++ }
