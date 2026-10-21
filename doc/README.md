@@ -12,6 +12,7 @@
 | [audit.md](audit.md) | `audit-local.sh` 自检：rules 语法、端口命名一致性、无个人配置残留 |
 | [config-ownership.md](config-ownership.md) | 配置归属铁律：A/B 类进固件，C 类（SSID/密码/自定义 MAC）不进 |
 | [maintenance.md](maintenance.md) | 长期维护：监控上游更新 + 逐条裁决工作流（check-upstream.sh） |
+| [patch-review.md](patch-review.md) | 多来源上游巡检评审账本：逐候选事实 + AI 建议 + 人工裁决字段（待人工填写） |
 | [scripting.md](scripting.md) | 脚本编写约定（C locale、grep 跨平台等血泪教训） |
 
 ## 设计 / 决策文档（仓库外归档）
