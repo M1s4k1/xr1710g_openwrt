@@ -1,0 +1,39 @@
+# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/vendor/fanboy/10-pstore-ramoops-22473-2f7d2d02.patch
+# Reason: an7581 ramoops/pstore 崩溃日志保留（PR 22473 carry）
+#   验证：对 openwrt main@63f702f1c git apply --check 干净
+# 档位：func（v1-safe 不含）
+diff --git a/target/linux/airoha/an7581/config-6.18 b/target/linux/airoha/an7581/config-6.18
+index 8ccea941f30467..35399c2a8425c2 100644
+--- a/target/linux/airoha/an7581/config-6.18
++++ b/target/linux/airoha/an7581/config-6.18
+@@ -311,6 +311,11 @@ CONFIG_POSIX_CPU_TIMERS_TASK_WORK=y
+ CONFIG_POWER_RESET=y
+ CONFIG_POWER_RESET_SYSCON=y
+ CONFIG_POWER_SUPPLY=y
++CONFIG_PSTORE=y
++CONFIG_PSTORE_COMPRESS=y
++CONFIG_PSTORE_CONSOLE=y
++CONFIG_PSTORE_PMSG=y
++CONFIG_PSTORE_RAM=y
+ CONFIG_PTP_1588_CLOCK_OPTIONAL=y
+ CONFIG_QUEUED_RWLOCKS=y
+ CONFIG_QUEUED_SPINLOCKS=y
+diff --git a/target/linux/airoha/dts/an7581.dtsi b/target/linux/airoha/dts/an7581.dtsi
+index 1db83dbb9796e6..f9c1abea514786 100644
+--- a/target/linux/airoha/dts/an7581.dtsi
++++ b/target/linux/airoha/dts/an7581.dtsi
+@@ -30,6 +30,14 @@
+ 			reg = <0x0 0x84000000 0x0 0xa00000>;
+ 		};
+ 
++		/* 64 KiB reserved for ramoops/pstore */
++		ramoops@86ff0000 {
++			no-map;
++			compatible = "ramoops";
++			reg = <0x0 0x86ff0000 0x0 0x10000>;
++			record-size = <0x1000>;
++		};
++
+ 		qdma0_buf: qdma0-buf@87000000 {
+ 			no-map;
+ 			reg = <0x0 0x87000000 0x0 0x2000000>;

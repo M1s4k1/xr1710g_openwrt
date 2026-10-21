@@ -38,6 +38,12 @@
 9710-ledtrig-netdev-link-mode-mutex.patch    # 理由: ledtrig-netdev link mode 互斥修复
 9711-net-phy-realtek-rtl826x-led.patch       # 理由: rtl826x PHY LED 硬件控制（PR #24034 内容，主线尚无）
 9712-mt76-mac80211-debugfs.patch             # 理由: per-STA debugfs 使能（符号默认注释，排障时开）
+9720-cpufreq-pmdomain-22029-e5d23549.patch    # 理由: AN7581 cpufreq+PM domain 修复（补漏：原 fanboy/03 default，review 发现）
+9721-bridge-offload-22533-9604ab5a.patch    # 理由: AN7581 bridge hw offload 使能（补漏；9024/9026 前置）
+9722-nft-flow-offload-l2-22533-ceffe6acb5.patch    # 理由: nft L2 bridge offload 三合一（补漏；675-01..03 形态）
+9723-pstore-ramoops-22473-2f7d2d02.patch    # 理由: an7581 ramoops 崩溃日志（补漏；原 fanboy/10 default）
+9724-cmonroe-stability-8c530f05.patch    # 理由: cmonroe 稳定性集（补漏；原 fanboy/17 default）
+9725-smartrg-stability-b45d5117.patch    # 理由: smartrg 992-20/21 适配（补漏；原 fanboy/18 default）
 9713-regdb-us-6ghz-no-no-ir.patch -> package/firmware/wireless-regdb/patches/    # 理由: US 6GHz 去 NO-IR（复制型：包源码 patch）
 9714-regdb-us-power-limits-uni1-29.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-1 29dBm 功率上限（复制型）
 9715-regdb-us-unii3-4-160mhz-30.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-3/4 160MHz 30dBm（复制型）
@@ -45,14 +51,23 @@
 9717-firewall4-bonding-lower-devices.patch -> package/network/config/firewall4/patches/    # 理由: firewall4 解析 bonding 下带设备（复制型）
 9718-rpcd-exec-observe-EOF.patch -> package/system/rpcd/patches/    # 理由: rpcd exec 观察 EOF 后再失效管道 fd（复制型）
 9719-iwinfo-txpowerlist-wiphy-dump.patch -> package/network/utils/iwinfo/patches/    # 理由: iwinfo txpowerlist wiphy dump 修复（复制型）
+9726-mac80211-397-wifi-mac80211-fix-csa-punct-bitmap-sta-mode.patch -> package/kernel/mac80211/patches/subsys/    # 理由: CSA punct bitmap 修复（补漏：旧 func 提档件，主线无等价）
+9727-mac80211-399-wifi-mac80211-fix-cac-event-call-trace.patch -> package/kernel/mac80211/patches/subsys/    # 理由: CAC call trace 修复（补漏）
+9728-mac80211-400-wifi-mac80211-fix-non-tx-bss-checking.patch -> package/kernel/mac80211/patches/subsys/    # 理由: non-TX BSS checking 修复（补漏）
+9729-mac80211-405-wifi-mac80211-handle-csa-finalize-non-tx-bss.patch -> package/kernel/mac80211/patches/subsys/    # 理由: CSA finalize non-tx BSS（补漏）
+9730-mac80211-406-wifi-mac80211-do-not-update-channel-if-csa-ie.patch -> package/kernel/mac80211/patches/subsys/    # 理由: CSA IE 信道更新修复（补漏）
+9731-mac80211-407-wifi-mac80211-fix-direct-csa-issues.patch -> package/kernel/mac80211/patches/subsys/    # 理由: direct CSA 修复（补漏）
+9732-mac80211-409-wifi-mac80211-fix-aql-bmc-mld.patch -> package/kernel/mac80211/patches/subsys/    # 理由: AQL BMC MLD 修复（补漏；MT7996 MLO 相关）
+9733-mac80211-410-wifi-mac80211-prevent-rts-unexpectedly-set.patch -> package/kernel/mac80211/patches/subsys/    # 理由: RTS 误置位防护（补漏）
+9734-mac80211-412-mac80211-defer-ap-side-ft-key-upload.patch -> package/kernel/mac80211/patches/subsys/    # 理由: FT key 上传延迟（补漏）
 
 
 # ── 98xx：Phase 2a mt76 NPU 栈移植（2026-10-21；仅 func；复制型 → package/kernel/mt76/patches/）──
 # 打丁器说明：树侧由 OpenWrt 构建用 patch -p1 应用（带 fuzz），与 git apply 语义不同——
 #   本批移植以 patch -p1 -F3 --batch 对 mt76@467ae2e 实测干净为准。
-# 状态：33 个候选 30 个已全部落地（含 3 个适配版：9804 剥 superseded 段 / 9817 重锚 / 9832 重写）。
+# 状态：mt76 系 31/31 全部落地（含 0156/0161 补漏）（含 3 个适配版：9804 剥 superseded 段 / 9817 重锚 / 9832 重写）。
 #   func 档 NPU 栈已完整但**未经构建验证**（CI 跳过）——刷机前必须至少一次完整构建。
-# 编号空档（9825/9827）为历史上 rebase 失败件预留，最终以适配形态落入邻近号。
+# （9825/9827 曾因流程疏漏未建文件，2026-10-21 review 发现后补入并复验 31/31。）
 9801-mt76-0001-wifi-mt76-mt7996-add-token-and-NPU-debugfs-counters.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0001；patch(1) 实测干净）
 9802-mt76-0003-wifi-mt76-mt7996-replace-direct-WTBL-access-with-MCU-for-station-statistics.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0003；patch(1) 实测干净）
 9803-mt76-0006-wifi-mt76-mt7996-refresh-power-limits-on-txpower-changes.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0006；patch(1) 实测干净）
@@ -77,9 +92,11 @@
 9822-mt76-0023-wifi-mt76-mt7996-add-pcie-aer-error-handling.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0023；patch(1) 实测干净）
 9823-mt76-0145-wifi-mt76-mt7996-scan-dwell-time-hw-cap.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0145；patch(1) 实测干净）
 9824-mt76-0147-wifi-mt76-mt7996-npu-init-retry-after-recovery.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0147；patch(1) 实测干净）
+9825-mt76-0156-wifi-mt76-finish-npu-rx-queue-teardown.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0156；顺序链内干净）
 9826-mt76-0154-wifi-mt76-tie-npu-dma-memory-to-the-consumer.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0154；patch(1) 实测干净）
 9828-mt76-0158-wifi-mt76-publish-npu-rx-buffers-after-refill.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0158；patch(1) 实测干净）
 9829-mt76-0159-wifi-mt76-preserve-npu-tx-ring-headroom.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0159；patch(1) 实测干净）
 9830-mt76-0160-wifi-mt76-mt7996-shutdown-device-before-restart.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0160；patch(1) 实测干净）
+9827-mt76-0161-wifi-mt76-track-rx-napi-registration.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0161；顺序链内干净，与 0156 配对）
 9831-mt76-0162-wifi-mt76-stop-npu-before-unregistering-device.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0162；顺序链内干净）
 9832-mt76-hwrro-release-sessions-on-teardown.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（fanboy/07 载荷；适配版：RX_STOP hunk 按主线 MLO 重构重写）

@@ -1,0 +1,39 @@
+# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/packages/mac80211-410-wifi-mac80211-prevent-rts-unexpectedly-set.patch
+#   （旧 func 集提档件，triage 时整组遗漏；主线 subsys 无等价修复已核实）
+# Reason: 防止 RTS 被意外置位
+# 档位：func（v1-safe 不含）
+diff --git a/net/wireless/nl80211.c b/net/wireless/nl80211.c
+index 9aa8337..cb7d6b5 100644
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -4219,7 +4219,7 @@ static int nl80211_set_wiphy_radio(struct genl_info *info,
+ 				   int radio_idx)
+ {
+ 	u32 rts_threshold = 0, old_rts, changed = 0;
+-	int result;
++	int result = 0;
+ 
+ 	if (!rdev->ops->set_wiphy_params)
+ 		return -EOPNOTSUPP;
+@@ -4230,13 +4230,16 @@ static int nl80211_set_wiphy_radio(struct genl_info *info,
+ 		changed |= WIPHY_PARAM_RTS_THRESHOLD;
+ 	}
+ 
+-	old_rts = rdev->wiphy.radio_cfg[radio_idx].rts_threshold;
++	if (changed) {
++		old_rts = rdev->wiphy.radio_cfg[radio_idx].rts_threshold;
++		if (changed & WIPHY_PARAM_RTS_THRESHOLD)
++			rdev->wiphy.radio_cfg[radio_idx].rts_threshold = rts_threshold;
+ 
+-	rdev->wiphy.radio_cfg[radio_idx].rts_threshold = rts_threshold;
++		result = rdev_set_wiphy_params(rdev, radio_idx, changed);
+ 
+-	result = rdev_set_wiphy_params(rdev, radio_idx, changed);
+-	if (result)
+-		rdev->wiphy.radio_cfg[radio_idx].rts_threshold = old_rts;
++		if (result)
++			rdev->wiphy.radio_cfg[radio_idx].rts_threshold = old_rts;
++	}
+ 
+ 	return 0;
+ }

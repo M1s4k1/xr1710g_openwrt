@@ -1,0 +1,21 @@
+# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/packages/mac80211-406-wifi-mac80211-do-not-update-channel-if-csa-ie.patch
+#   （旧 func 集提档件，triage 时整组遗漏；主线 subsys 无等价修复已核实）
+# Reason: CSA IE 存在时不更新信道
+# 档位：func（v1-safe 不含）
+diff --git a/net/mac80211/mlme.c b/net/mac80211/mlme.c
+index c1eefae5..b9e8e2f9 100644
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -7918,7 +7918,8 @@ static void ieee80211_rx_mgmt_beacon(struct ieee80211_link_data *link,
+ 
+ 	changed |= ieee80211_recalc_twt_req(sdata, sband, link, link_sta, elems);
+ 
+-	if (ieee80211_config_bw(link, elems, true, &changed,
++	if (!elems->ch_switch_ie &&
++	    ieee80211_config_bw(link, elems, true, &changed,
+ 				IEEE80211_STYPE_BEACON)) {
+ 		ieee80211_set_disassoc(sdata, IEEE80211_STYPE_DEAUTH,
+ 				       WLAN_REASON_DEAUTH_LEAVING,
+-- 
+2.45.2
+
