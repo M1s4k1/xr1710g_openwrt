@@ -58,4 +58,4 @@ updates/<source-id>/<candidate-id>/
 review/patches/<candidate-id>.patch
 ```
 
-`updates/` 与 `review/` 不得被 stage 脚本复制进 `.stage/`，也不能直接替换 `aggregate/`。候选 patch 必须记录来源 SHA 和 hash，供生成器复核。
+`updates/` 与 `review/` 是隔离区，候选 patch 必须记录来源 SHA 和 hash，供人工复核；它们不得直接进入 `local/patches/` 或改动源码树。

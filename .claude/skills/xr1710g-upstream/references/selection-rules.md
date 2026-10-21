@@ -70,4 +70,4 @@ reviewed_at:
 - stock：`absorb-stock: y` 的候选；
 - v1-safe：`absorb-v1-safe: y` 的候选。
 
-默认不改正式文件。`--apply` 只在所有校验通过、用户明确确认且 unified diff 已展示后执行。输出 `doc/selected-patches.md` 时保留生成时间、输入文件 Git SHA、aggregate/OpenWrt SHA、候选 ID、人工理由和验证状态。
+默认不改正式文件。`--apply` 只在所有校验通过、用户明确确认且 unified diff 已展示后执行。输出 `doc/selected-patches.md` 时保留生成时间、输入文件 Git SHA、OpenWrt pin、候选 ID、人工理由和验证状态。

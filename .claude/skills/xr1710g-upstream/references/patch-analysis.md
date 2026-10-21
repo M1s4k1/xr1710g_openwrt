@@ -52,8 +52,8 @@ AI 不得填写或推断人工字段。`status: accept` 不等于两个档位都
 ## 分析顺序
 
 1. 核对来源 SHA、patch hash 和 diff 范围。
-2. 对照 aggregate/MANIFEST/ORDER 识别新增、删除、改档和顺序变化。
+2. 对照 `local/manifest.rules*` 收录清单与补丁头的「原体」溯源注释，识别新增、删除、顺序变化。
 3. 对照两份 rules 和本地 `patches/` 识别重复、HIT、HIT-CFG、COLLIDE。
 4. 检查目标目录、ROOT/copy 语义、依赖顺序和互斥补丁。
-5. 核对 OpenWrt 与 Linux 基线，标出超出 `6.18.44` 的风险。
+5. 核对 OpenWrt pin 与 Linux 基线（`config/source-lock.env`，当前 6.18.55），标出版本漂移风险。
 6. 只输出建议和验证命令，等待人工决定。

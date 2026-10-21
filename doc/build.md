@@ -54,7 +54,8 @@ feeds + defconfig + seed + ccache 注入 → make → 上传 `.itb` 与 Release�
 
 - 基座 pin：`63f702f1c0cebe2587aac10b63a02e964fc2a558`（Linux **6.18.55**）
 - 锁定文件：`config/source-lock.env`；改动 = 显式决策，须全量重新验证补丁集
-- aggregate（前基座）已退役为参考目录，见 `aggregate/REFERENCE.md`
+- aggregate（前基座快照）已于 2026-10-21 整体移出仓库——移出前内容见 git 历史；
+  挂起项 9010 的源文件在仓库外上层目录备 rebase
 
 ## 5. 已定位的环境坑
 

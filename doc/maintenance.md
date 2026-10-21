@@ -47,3 +47,18 @@ fanboy 废弃关闭）。
 - 驱动/框架问题：优先推动上游合入（板级方向：社区 PR #22397），本地只做桥接；
 - 本地补丁尽量小、可上游化；成熟一个、上报一个；
 - aggregate 参考目录仅用于查证 provenance 与 Phase 2 移植，不进构建。
+
+## 6. aggregate 快照已移出（2026-10-21）
+
+转向前内置的 `aggregate/`（genshanxinli/xr1710g-openwrt@244d433 冻结快照，
+207 个文件）已于 2026-10-21 晚整体移出仓库：
+
+- **移出前内容**：git 历史可完整取回（`git log --all -- aggregate/`，
+  移出前最后状态在 `ff65d49`）
+- **挂起项 9010 的源**：复制到仓库外上层目录
+  `misaki-openwrt/9010-wifi-scripts-txpower-ucode.patch.pending-rebase`
+  （wifi-scripts per-radio txpower，待结构级 rebase；manifest.rules 头有详细说明）
+- **溯源不断**：全部本地补丁头的「原体：aggregate/patches/...」注释与
+  manifest 的理由行保留（指向历史路径，同 "FIXES Fxxx" 悬空标记的性质）
+- **裁决账本**：`upstream-decisions.md`（aggregate 时代）与
+  `doc/patch-review.md`（转向后）均保留

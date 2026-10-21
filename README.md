@@ -5,9 +5,11 @@
 pinned 的 OpenWrt 源码树（`config/source-lock.env` 的 `OPENWRT_REF`）。
 
 **架构沿革（重要）**：2026-10-21 前本项目基于 `genshanxinli/xr1710g-openwrt`
-的冻结 aggregate 快照；当日起基座切换为 **OpenWrt 主线**，aggregate 退役为参考目录
-（`aggregate/REFERENCE.md`），板级使能移植为本地补丁。未来的更新一律向 OpenWrt
-主线靠拢：驱动/框架用主线自带，本项目只保留板级差异与确有必要的能力增强。
+的冻结 aggregate 快照；当日起基座切换为 **OpenWrt 主线**，aggregate 快照已于
+2026-10-21 晚整体移出仓库（移出前的内容见 git 历史；挂起项 9010 的源文件复制
+到仓库外上层目录备 rebase）。板级使能与全部功能补丁已移植为本地补丁。未来的
+更新一律向 OpenWrt 主线靠拢：驱动/框架用主线自带，本项目只保留板级差异与确有
+必要的能力增强。
 
 - 基座：OpenWrt 主线，pin 与内核版本见 [`config/source-lock.env`](config/source-lock.env)
 - 本项目差异：[`local/patches/`](local/patches/)（应用顺序 = 文件名字典序）
@@ -36,7 +38,6 @@ xr1710g_openwrt/
 │   ├── feeds.custom.conf  # 自定义 feed（packages-xr1710g，由 9603 补丁创建）
 │   └── upstream-sources.yml  # 参考来源登记（openwrt=基座；fanboy 已废弃）
 ├── scripts/          # apply-patches / build-mine / audit-local / check-upstream / review-upstreams
-├── aggregate/        # 退役参考目录（构建不再使用；见 REFERENCE.md）
 ├── doc/              # 全部说明 / 介绍类文档（见 doc/README.md 索引）
 └── upstream-decisions.md   # 多来源巡检评审账本（历史轮次）
 ```

@@ -7,8 +7,8 @@
     基线→远端 tip 之间的提交与文件变更，生成可人工裁决的逐项报告。
 
 只读约束：
-  - 不写任何正式文件（aggregate/、config/source-lock.env、local/manifest.rules*、
-    MANIFEST、ORDER、OpenWrt 树、upstream-decisions.md 一律不动）。
+  - 不写任何正式文件（config/source-lock.env、local/manifest.rules*、
+    local/patches/、OpenWrt 树、upstream-decisions.md 一律不动）。
   - clone/fetch 只放进新建的隔离临时目录，退出时清理。
   - 只用 git 读取元数据/diff，绝不执行来源仓库里的 shell/Makefile/hook/解释器。
   - 不做任何"吸收/合并/补丁生成"，AI 建议由调用方（skill）基于本报告给出。

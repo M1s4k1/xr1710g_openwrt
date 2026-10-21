@@ -1,6 +1,14 @@
-# upstream-decisions.md — aggregate 快照裁决账本
+# upstream-decisions.md — aggregate 快照裁决账本（历史档案）
 
-本项目使用 `aggregate/` 内置冻结快照。这里保留复制来源的历史裁决记录；构建过程不追踪、不 fetch，也不会自动更新 `genshanxinli/xr1710g-openwrt`。以后如需更新 aggregate，必须人工复制、逐项比较并重新验证。
+> **2026-10-21 归档说明**：本账本记录的是 aggregate 时代（基座为
+> `genshanxinli/xr1710g-openwrt` 冻结快照）的裁决。该快照已于当日整体移出
+> 仓库（移出前内容见 git 历史；挂起项 9010 的源文件复制到仓库外上层目录）。
+> 转向后的新裁决记录在 `doc/patch-review.md`。保留本文件作为历史决策依据。
+
+## 历史背景（aggregate 时代）
+
+本项目曾使用 `aggregate/` 内置冻结快照（不复刻、不 fetch、不自动更新）。
+如需更新，须人工复制、逐项比较并重新验证。
 
 ## 怎么用
 

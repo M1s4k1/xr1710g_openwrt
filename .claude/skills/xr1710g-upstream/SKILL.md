@@ -6,13 +6,13 @@ version: 0.1.0
 
 # XR1710G 上游补丁维护
 
-将当前 XR1710G overlay 的上游更新、补丁分析、人工裁决、选择集生成、审计和构建串成可追溯流程。保持 `aggregate/`、OpenWrt 源码树、评审文件和最终选择集之间的版本锁定关系。
+将当前 XR1710G 固件仓库（OpenWrt 主线为基座 + 本地补丁集）的上游更新、补丁分析、人工裁决、收录清单维护、审计和构建串成可追溯流程。保持 `config/source-lock.env` 的 pin、OpenWrt 源码树、评审文件和最终收录清单之间的版本锁定关系。
 
 ## 上下文边界
 
 继承调用本 skill 的当前 Claude Code conversation 的接口、provider、model、工具权限、工作目录和已确认上下文。skill 不创建独立会话，不调用 Anthropic SDK/HTTP，不配置 API endpoint，不选择或切换 model，不创建独立 agent。不得把完整对话、凭证或敏感环境变量写入仓库、review、日志或 artifact。
 
-将 AI 输出限定为事实摘录、候选分析和建议字段。将 `absorb-*`、`status`、`reason`、档位确认视为人工裁决。未经人工确认和确定性脚本审计，不得改写正式 `aggregate/`、`local/manifest.rules*`、OpenWrt 源码树，不得构建、触发 CI、创建 Release、commit 或 push。
+将 AI 输出限定为事实摘录、候选分析和建议字段。将 `absorb-*`、`status`、`reason`、档位确认视为人工裁决。未经人工确认和确定性脚本审计，不得改写正式 `local/manifest.rules*`、`local/patches/`、OpenWrt 源码树，不得构建、触发 CI、创建 Release、commit 或 push。
 
 默认只读。执行网络抓取、写入评审、生成正式 rules、重建 `.stage/`、真实构建、触发 Actions、发布 Release 前，先说明副作用、输入 ref、目标路径和预计影响，并取得对应确认。发现未提交改动时先报告；不得自动 `git reset --hard`、`git clean -fd`、删除用户文件或覆盖无关改动。
 
@@ -30,10 +30,10 @@ version: 0.1.0
 
 先读取并记录：
 
-- `config/source-lock.env`：OpenWrt 主线 pin 与 Linux 版本（架构转向后唯一构建基座；
-  aggregate 已退役为参考目录，见 `aggregate/REFERENCE.md`）；
+- `config/source-lock.env`：OpenWrt 主线 pin 与 Linux 版本（唯一构建基座；
+  aggregate 快照已于 2026-10-21 移出仓库，移出前内容见 git 历史）；
 - `local/manifest.rules`、`local/manifest.rules.v1-safe`：两档补丁收录清单（新语义）；
-- `local/patches/`：补丁实体（9401-9403 板级使能 + 9501/9601/9602/9603）；
+- `local/patches/`：补丁实体（9401-9403 板级使能 + 9501/9601/9602/9603 + 97xx 增强 + 98xx NPU 栈）；
 - `doc/patch-review.md`、`upstream-decisions.md`：历史裁决；
 - `scripts/apply-patches.sh`、`scripts/check-upstream.sh`、`scripts/audit-local.sh`、`scripts/build-mine.sh`、`scripts/review-upstreams.py`；
 - 工作树状态及用户未提交改动。
