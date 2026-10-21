@@ -363,12 +363,12 @@ ai-risk: medium
 ai-confidence: medium
 ai-validation: diff 对照 aggregate 的 SerDes/PHY 相关补丁；确认与 9501 网口命名（gdm2/phy8、gdm4/phy5）无冲突
 ai-open-questions: 该提交是"对齐"（修复既有偏差）还是新能力；我们的 DTS 是否已含等价配置
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施（与 010 同批，均为 naoki 09-28 的 XR1710G DTS 线）。直接同名设备、直接关系 10G-1/10G-2；与 005 取证互洽（本板 phy5/phy8 确为 RTL826x SerDes，9033 LED 补丁在 default 档）。实施时 diff 对照 aggregate 9001 的 SerDes 配置，确认"修复偏差"还是"新能力"，并验证与 9501 的 gdm2/phy8、gdm4/phy5 映射无冲突（节点名不变只改属性值则不冲突）；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-003
