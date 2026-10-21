@@ -425,12 +425,12 @@ ai-risk: low
 ai-confidence: high
 ai-validation: 无（留档：启动 6.18.5x rebase 专项时参考其 737 系列处理顺序）
 ai-open-questions: 无
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 当前 6.18.44 不适用；reject 的是"现在合入"，其价值在留档查阅——rebase 批次（002 等）启动时，737 系列处理顺序与 BBRv3 裁剪决策可作现成参考，账本记录即完成该目的
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-005
