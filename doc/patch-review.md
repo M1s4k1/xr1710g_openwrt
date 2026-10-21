@@ -518,12 +518,12 @@ ai-risk: medium
 ai-confidence: medium
 ai-validation: 逐提交 diff 对照 aggregate 对应补丁（PPE/flow-offload/9994 系）；AN7583 部分确认不适用
 ai-open-questions: PPE subflow 签名修复是否对应我们某个 default 补丁的同一 bug
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 5 个子项逐一对照均不适用于当前树：① 22f13f07e 针对 8 参签名形态（我们栈为 6 参、全树无 egress_dev，9039 调用正确且在编）——留作 airoha 栈前进时的适配备忘；② 我们 pin 的 310-10 无 stats_lock 痕迹（该区域上游 10-13 已另行重构）；③ 675-01 我们已内联于 fanboy/06（0 内容差异）；④ 9994 为 fork 私有；⑤ AN7583 PON 与 XR1710G 无关
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ---
