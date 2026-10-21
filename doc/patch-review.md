@@ -301,12 +301,12 @@ ai-risk: low
 ai-confidence: medium
 ai-validation: 无（若日后想在 XR1710G 上用 FlowSense，可单独评估其 rpcd 插件兼容性）
 ai-open-questions: FlowSense 是否值得作为 LuCI 应用单独引入（非本固件流程）
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 风扇控制与 W1700K 机箱/传感器绑定（本板走 9602 系统配置线）；FlowSense 为独立应用、与固件构建无耦合；若个人有兴趣可作独立事项另行评估（ucode rpcd 插件形态），不走上游合入流程
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-001
