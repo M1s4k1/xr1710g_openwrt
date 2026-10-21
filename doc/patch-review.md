@@ -207,13 +207,13 @@ ai-recommended-tier: pending
 ai-risk: medium
 ai-confidence: medium
 ai-validation: 与 aggregate 快照推进同步评估；rebase 后跑 audit-patches / patch dry-run
-ai-open-questions: 新 pin 与 mt76-0001/0003/0023 等补丁的兼容性未验证
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: 新 pin 与 mt76-0001/0003/0023 等补丁的兼容性未验证——已对比取证（2026-10-21）：现 pin 01367e60 实为 fanboy fork = 上游 be5ce791(08-13) + 1 个纯固件提交，驱动源码与上游一致；新 pin 467ae2e(10-08) = 89 提交 / 61 文件 / +2322−583，主体为 MT7996 MLO link 生命周期功能开发（非重构）；靶点重合：main.c(+804/我方5)、mcu.c(168/7)、npu.c(12/11)、mt7996.h(52/4)、pci.c(12/3)
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起归入 6.18.5x rebase 批次（与 002/003/004 同批，一次做完省一轮 apply+验证）。实施要点：① 批次内技术风险最高项——default 档 NPU offload/MLO/radar/hwrro 均在射程内，完成后须 Wi-Fi 专项验证（不能只 boot test）；② 9067 固件 pin 需把 fanboy 固件提交重新嫁接到新 pin；③ mt76-0023（PCIe AER）随 pci.c 改动重评；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-007
