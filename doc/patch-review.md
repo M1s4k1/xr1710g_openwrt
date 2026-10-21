@@ -53,12 +53,12 @@ ai-risk: high
 ai-confidence: high
 ai-validation: 若未来跟进：两档 stage --stage-only + audit-local.sh + audit-order + 完整构建；预期大量补丁需 rebase
 ai-open-questions: 何时启动 6.18.5x rebase 专项（需与 aggregate 快照推进协同）
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 维持 6.18.44 pin；rebase 留待与 aggregate 快照推进协同的专项
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-002
