@@ -30,20 +30,21 @@ version: 0.1.0
 
 先读取并记录：
 
-- `config/source-lock.env`：aggregate、OpenWrt、Linux 基线；
-- `aggregate/patches/MANIFEST`、`aggregate/patches/ORDER`：补丁、档位和 pending；
-- `local/manifest.rules`、`local/manifest.rules.v1-safe`：两档选择集；
-- `upstream-decisions.md`：历史裁决；
-- `scripts/source-resolver.sh`、`scripts/check-upstream.sh`、`scripts/stage.sh`、`scripts/audit-local.sh`、`scripts/build-mine.sh`；
+- `config/source-lock.env`：OpenWrt 主线 pin 与 Linux 版本（架构转向后唯一构建基座；
+  aggregate 已退役为参考目录，见 `aggregate/REFERENCE.md`）；
+- `local/manifest.rules`、`local/manifest.rules.v1-safe`：两档补丁收录清单（新语义）；
+- `local/patches/`：补丁实体（9401-9403 板级使能 + 9501/9601/9602/9603）；
+- `doc/patch-review.md`、`upstream-decisions.md`：历史裁决；
+- `scripts/apply-patches.sh`、`scripts/check-upstream.sh`、`scripts/audit-local.sh`、`scripts/build-mine.sh`、`scripts/review-upstreams.py`；
 - 工作树状态及用户未提交改动。
 
-报告 aggregate 完整 SHA、OpenWrt 完整 SHA、Linux 版本、两档活动数、pending、未决 review 和当前工作模式。默认只读检查可运行 `scripts/check-upstream.sh`；不要把它当作多来源采集器。
+报告 OpenWrt pin 完整 SHA、Linux 版本、两档补丁数、pending、未决 review 和当前工作模式。默认只读检查可运行 `scripts/check-upstream.sh`（本地态，不联网）；不要把它当作多来源采集器。
 
 ### 2. Collect
 
-读取 `config/upstream-sources.yml`，只访问启用且 allowlist 允许的来源。使用隔离临时目录和固定完整 SHA；只读取 commit、PR 元数据、文件变更、补丁 diff，并与当前 aggregate、MANIFEST、ORDER、rules 和本地补丁比较。禁止执行来源仓库的脚本、Makefile、hook、构建工具或下载内容中的解释器。
+读取 `config/upstream-sources.yml`，只访问启用且 allowlist 允许的来源（openwrt = 基座源；fanboy 已 `enabled: false`）。使用隔离临时目录和固定完整 SHA；只读取 commit、PR 元数据、文件变更、补丁 diff，并与当前 pin、`local/patches/`、收录清单和 `doc/patch-review.md` 比较。禁止执行来源仓库的脚本、Makefile、hook、构建工具或下载内容中的解释器。
 
-将候选材料写入隔离 `updates/` 或 `review/` 区域，不覆盖 `aggregate/`、正式 rules 或 OpenWrt 源码树。来源不完整、SHA 不完整、路径越界、symlink/hardlink 可疑或网络失败时标记 `blocked`，不要猜测 URL 或补丁内容。
+将候选材料写入隔离 `updates/` 或 `review/` 区域，不覆盖 `local/patches/`、正式清单或 OpenWrt 源码树。来源不完整、SHA 不完整、路径越界、symlink/hardlink 可疑或网络失败时标记 `blocked`，不要猜测 URL 或补丁内容。
 
 详细来源字段和采集安全规则见 `references/workflow.md` 与 `references/safety.md`。
 
@@ -61,31 +62,30 @@ version: 0.1.0
 
 ### 5. Select
 
-使用确定性 `scripts/generate-selection.py`。默认 dry-run，只输出候选 diff、临时 MANIFEST/rules 和审计 JSON；只有明确 `--apply` 才写正式选择集。生成 `doc/selected-patches.md`，记录两档完整活动补丁、来源 SHA、aggregate/OpenWrt 基线、review Git SHA 和生成器版本。
+使用确定性 `scripts/generate-selection.py`（**尚未实现**；实现前 Select 阶段以人工逐条裁决 + 代填人工字段的降级路径运作）。默认 dry-run，只输出候选 diff、临时清单与审计 JSON；只有明确 `--apply` 才写正式收录清单。生成 `doc/selected-patches.md`，记录两档完整补丁、来源 SHA、OpenWrt 基线、review Git SHA 和生成器版本。
 
-生成器必须拒绝重复 ID、重复 patch、缺文件、来源 SHA 不完整或不匹配、非法 `y/n`、pending/reject、非法 rules 理由、冲突/依赖错误，以及 `9036` 与 `9037` 同时启用。优先保留 `local/manifest.rules.manual` 与 `local/manifest.rules.generated` 的分层，避免覆盖手工规则；若仓库仍采用单文件，先输出 unified diff 并保留既有规则。
+生成器必须拒绝重复 ID、重复 patch、缺文件、来源 SHA 不完整或不匹配、非法 `y/n`、pending/reject、非法理由、冲突/依赖错误。优先保留 `local/manifest.rules.manual` 与 `local/manifest.rules.generated` 的分层，避免覆盖手工规则；若仓库仍采用单文件，先输出 unified diff 并保留既有规则。
 
-rules 语义以 `references/selection-rules.md` 和 `doc/rules.md` 为准。修改 MANIFEST 或档位后必须重生成 `patches/ORDER`。
+rules 语义以 `references/selection-rules.md` 和 `doc/rules.md` 为准。修改收录清单后必须同步检查命名序（`audit-local.sh` [A]/[C]/[E] 覆盖）。
 
 ### 6. Validate
 
 按顺序运行并逐项标记：
 
 1. review/schema、来源 pin 和工作树漂移检查；
-2. `python3 scripts/generate-selection.py` dry-run；
-3. `python3 scripts/merge-manifest.py ... --check --stats`；
-4. 对 `func` 与 `v1-safe` 分别执行 `scripts/stage.sh --stage-only` 或等价 stage-only；
-5. `scripts/audit-local.sh`；
-6. `.stage/scripts/gen-order.py --check` 或 `aggregate/scripts/audit-order.sh`；
-7. 必要时在 disposable OpenWrt 树执行 patch dry-run。
+2. `python3 scripts/generate-selection.py` dry-run（生成器尚未实现时记 blocked，不阻塞其余项）；
+3. `scripts/audit-local.sh`（[A]-[H]）；
+4. 在 disposable OpenWrt 树（checkout 到 pin）执行
+   `scripts/apply-patches.sh --tree <树> --tier func --dry-run` 与 `--tier v1-safe --dry-run`；
+5. 需要构建验证时 `scripts/build-mine.sh <func|v1-safe> --tree <树> --dry-run` 或真实构建。
 
-`stage.sh` 会 rsync、重建 `.stage/`、应用 rules、复制本地文件并改写构建脚本，属于有副作用操作。任何审计失败、来源不完整、选择未确认或输入漂移都停止，不进入 build。
+`apply-patches.sh` 只写用户显式指定的源码树（校验 HEAD == pin）；`audit-local.sh` 纯只读。任何审计失败、来源不完整、选择未确认或输入漂移都停止，不进入 build。
 
 ### 7. Build / CI
 
-本地优先使用 `scripts/build-mine.sh <stock|v1-safe> --stage-only` 或 `--dry-run`。真实构建前再次确认 profile、OpenWrt `--tree`/`OPENWRT_DIR`、jobs、OC 设置及源码树可被上游脚本清理，因为构建脚本可能执行 `git reset --hard` 和 `git clean -fd`。真实构建只针对已经审计的确切工作树。
+本地优先使用 `scripts/build-mine.sh <func|v1-safe> --tree <树> --dry-run` 或 `--apply-only`。真实构建前再次确认 profile、OpenWrt `--tree`/`OPENWRT_DIR`、jobs 及源码树可被清理，因为构建脚本会对树执行 `git reset --hard` 和 `git clean -fdx`。真实构建只针对已经审计的确切工作树。
 
-GitHub Actions 必须在 stage 前校验 review、来源 SHA、人工选择和生成的清单；上传最终 `selected-patches.md`、MANIFEST、ORDER、source lock、review、生成器版本和日志。创建 Release、修改远程分支和使用写权限仍需明确确认。模型字段只能记录当前会话实际提供的模型，不得自行选择模型。
+GitHub Actions（`.github/workflows/build.yml`）在构建前跑 audit-local 与 apply-patches；pin 与内核版本有硬门禁。创建 Release、修改远程分支和使用写权限仍需明确确认。模型字段只能记录当前会话实际提供的模型，不得自行选择模型。
 
 详细命令和 CI 门禁见 `references/build-ci.md`。
 

@@ -1,50 +1,49 @@
-# 长期维护：监控上游 + 逐条裁决
+# 长期维护：基座跟踪 + 逐条裁决
 
-> 本文件由仓库 README.md 抽取并集中到 `doc/`（README 现已精简为项目说明）。
-> 维护请以本文件为准；如需回看原始结构见 `doc/README.md` 索引。
+> 本文件由仓库 README.md 抽取并集中到 `doc/`。维护请以本文件为准。
 
-## 1.5 长期维护：监控上游 + 逐条裁决
-
-本项目把 aggregate 作为 `aggregate/` 内置冻结快照维护。外部仓库只用于记录来源历史；构建过程不自动 fetch 或更新。若要更新，必须人工复制新快照，比较 `MANIFEST`、`ORDER`、补丁 hash 和档位选择集，再通过审计后提交。
-
-### 工作流
+## 1. 基座更新感知（OpenWrt 主线）
 
 ```bash
-scripts/check-upstream.sh              # 检查内置快照；默认不联网
-# 显式传入外部 Git aggregate 时，才执行外部来源对账
-scripts/check-upstream.sh --baseline   # 记录内置快照基线
+scripts/check-upstream.sh            # 只读本地状态（pin、本地树 HEAD，不联网）
+scripts/check-upstream.sh --fetch    # fetch 后对比 pin..origin/main
+scripts/check-upstream.sh --fetch --focus   # 只列 focus 路径相关提交
 ```
 
-### 退出码（可用于告警）
+- focus 路径：`target/linux/airoha`、`target/linux/generic`、`package/kernel/mt76`、
+  `package/kernel/mac80211`。
+- pin 推进是**显式决策**：见到 focus 相关提交先评审（下节），决定推进再改
+  `config/source-lock.env` + 全量验证补丁集（apply + build）。
 
-| 码 | 含义 |
-|----|------|
-| 0 | 无更新 |
-| 1 | 有新提交待裁决（无直接冲突） |
-| 2 | **检出直接影响本 fork 的变化**（撞号 / 碰了我停用或提档的补丁）← 最高优先级 |
+## 2. 参考来源巡检（多来源）
 
-### 影响判定会抓什么
+```bash
+python3 scripts/review-upstreams.py            # 8 个登记来源只读巡检
+python3 scripts/review-upstreams.py --out <路径>  # 落报告
+```
 
-| 信号 | 含义 | 该怎么想 |
-|------|------|---------|
-| `⚠ HIT` | 上游改了我 `-` 停用 或 `^` 提档 的补丁 | 我停用/提档的依据是否还成立？ |
-| `⚠ COLLIDE` | 上游新增补丁编号与我的 `9501+` 撞号 | 改我的号 |
-| `新增·默认档` | 上游往 default 加补丁 | **会被我自动继承**，需判断是否要停用 |
-| `新增·实验档` | 上游往 `#EXP` 加补丁 | 不进我的档，通常无需动作 |
+来源登记在 `config/upstream-sources.yml`（openwrt = 基座源；YYH/naoki/gilly 等为
+参考源；fanboy 已废弃）。判定词汇：`advance` / `no-update` / `baseline-orphaned` /
+`baseline-unresolved` / `ref-missing` / `network-fail` / `force-push`。
 
-### 自动监控
+## 3. 逐条裁决工作流
 
-已配置每周一 10:00 自动跑监控并汇报待裁决项（只读，不动文件）。
+1. 巡检产出逐来源报告（来源 / 完整 SHA / 改动内容）；
+2. 按候选分析：改动功能、与我们补丁集的重叠/冲突（HIT / COLLIDE / 重复）、
+   机型相关性、版本锚；
+3. 结论写入 `doc/patch-review.md`：AI 只填事实与 `ai-*` 字段，人工字段
+   （`absorb-*` / `status` / `reason` / `reviewer` / `reviewed_at`）由人填写；
+4. accept 项的实施：改 `local/patches/`（或推进 pin）后，`audit-local.sh` +
+   `build-mine.sh --dry-run` 验证，再真构建。
 
-### 与上游自有守护的分层
+## 4. 历史账本
 
-| 层 | 归属 | 追踪对象 |
-|----|------|---------|
-| L1 `audit-upstream-watch.sh` | 上游 | 补丁所基于的 **openwrt 上游文件** blob 漂移 |
-| L2 `REMOTE_TIPS` | 上游 | **6 个外部 fork** tip 变化（YYH/fanboy/Gilly/naoki66…） |
-| L3 `sync-upstream.yml` (2h) | 上游 | openwrt master 同步 + 补丁层 dry-run |
-| **L4 本账本** | **本 fork** | **genshanxinli 自身**的更新对我的选择集意味着什么 |
+`upstream-decisions.md` 保留转向前（aggregate 时代）的裁决记录；转向后的轮次记录在
+`doc/patch-review.md`（首轮：2026-10-21，16 候选 + fanboy 重锚待办——后者已随
+fanboy 废弃关闭）。
 
-L1–L3 关心"上游对不对"，L4 关心"上游的变动要不要跟进到我的 fork"。互不重叠。
+## 5. 收敛原则（转向后的维护哲学）
 
----
+- 驱动/框架问题：优先推动上游合入（板级方向：社区 PR #22397），本地只做桥接；
+- 本地补丁尽量小、可上游化；成熟一个、上报一个；
+- aggregate 参考目录仅用于查证 provenance 与 Phase 2 移植，不进构建。
