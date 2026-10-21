@@ -553,12 +553,12 @@ ai-risk: medium
 ai-confidence: high
 ai-validation: 人工重锚：将 config/upstream-sources.yml 的 baseline 改为 f81b8b3（完整 SHA），再与 aggregate/patches/vendor/fanboy/ 已 vendor 内容逐一对账（format-patch 重取 + diff）
 ai-open-questions: 是否保留该来源的基线追踪（force-push 频发，基线语义已失效）；或降级为"按需人工对账"并不再登记基线
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 随 2026-10-21 架构转向废弃并关闭：基座切至 OpenWrt 主线后 W1700K 专用料不再进入构建，上游登记已置 enabled=false；不重锚——如将来确需 W1700K 料，人工按需对账，不登记基线
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ---
