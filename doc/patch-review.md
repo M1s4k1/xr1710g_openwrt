@@ -595,4 +595,8 @@ reviewed_at:
 - 巡检（复跑，11:20 CST，修复后）：openwrt / gilly / naoki 均 `[ADVANCE]`
   （1303 / 25 / 150 提交，与人工补采数字一致）；fanboy `[BASELINE-ORPHANED]`
   （自动输出重锚指引）；4 no-update。总判定 partial（exit 1）——唯一待办是 fanboy 重锚。
+- 巡检（skill 流程复跑，11:56 CST）：8 来源 tip 与 11:20 **完全一致**
+  （openwrt 63f702f1c / gilly 8f4812bb4 / naoki c15760c70 / fanboy 仍 orphaned /
+  yyh×3 + hurryman no-update）⇒ 距首轮评审无新增变更，16 条待裁决条目维持不变，
+  人工字段未被触碰。
 - 本文件为评审载体；吸收动作（改 rules / 更新 aggregate）未执行，等待人工裁决。
