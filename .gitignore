@@ -1,5 +1,5 @@
-# stage 输出目录（每次构建由 stage.sh 重新合成，不入库）
-#   ⚠ 任何"需跨 stage 保留的运行时状态"都不要放这里（--delete 会清掉）
+# 旧架构（aggregate 叠加）的 stage 输出目录——stage.sh 已随转向退役，
+#   保留忽略项防误提交；新架构无此目录（apply-patches.sh 直接写用户指定的源码树）
 .stage/
 
 # 上游裁决基线（check-upstream.sh --baseline 写入；不能放 .stage/ 下）
