@@ -145,13 +145,13 @@ ai-recommended-tier: reject
 ai-risk: medium
 ai-confidence: medium
 ai-validation: 随下次 aggregate 快照推进时整体评估（机制切换影响 image 生成与 FIT 产物）
-ai-open-questions: overlay 机制与上游 image-commands 改动的耦合范围未评估
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: overlay 机制与上游 image-commands 改动的耦合范围未评估——已对比取证（2026-10-21）：上游三个提交只重构 EVB 参考板（an7581-evb-emmc*.dts/.dtsi、an7581-evb.dts→multievb）与 an7581-npu-wlan.dtsi；我们的板文件 an7581-xr1710g-ubi.dts 及其 include 的 an7581-npu-mt7996.dtsi、9501 改的 netdev-name/board.d **均不在提交清单，零文件级冲突**；唯一间接接触点为 an7581.mk image 配方（需核对 xr1710g-ubi 条目上下文）
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施，与 002/003 同批归入 6.18.5x rebase 专项；与我们的 DTS 体系零文件级冲突已证实；overlay 是板级主线化方向（9501 头部声明走社区 PR #22397），顺势接受成本近零；实施时核对 an7581.mk 中 xr1710g-ubi 条目；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-005
