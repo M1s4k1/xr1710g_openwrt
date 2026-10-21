@@ -2,6 +2,13 @@
 
 **状态：退役（2026-10-21 架构转向起，构建不再使用）。**
 
+**2026-10-21 文档清理**：genshanxinli 的文档已全部移除（原 CONTEXT.md /
+HANDOFF.md / TASKS.md / README.md / docs/×14 / 调研报告×3）。保留的只有构建
+与移植所需的**数据**：`patches/`（Phase 2b/2c 移植来源）、`config/`、`files/`、
+`packages-xr1710g/`、`scripts/`（退役构建机制参考）。
+注意：`patches/MANIFEST` 注释与部分本地补丁头里的 "FIXES Fxxx" 引用现为
+**历史悬空标记**（指向已移除的 docs/FIXES.md）——仅作溯源线索，勿当活链接。
+
 ## 发生了什么
 
 本项目原来以 `genshanxinli/xr1710g-openwrt` 的冻结快照（`244d433`，2026-09-20 复制）
