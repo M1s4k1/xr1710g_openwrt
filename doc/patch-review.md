@@ -83,13 +83,13 @@ ai-recommended-tier: reject
 ai-risk: low
 ai-confidence: high
 ai-validation: diff e1bd479 与 aggregate/patches/vendor/fanboy/11-airoha-lro-default-0e90a420.patch（default 档，HW GRO/LRO 能力载体）及其后续 "enable LRO by default" 提交
-ai-open-questions: 上游版本是否比 fanboy 线更新（若仅是同一内容的不同封装则确认 reject）
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: 上游版本是否比 fanboy 线更新（若仅是同一内容的不同封装则确认 reject）——已 diff 取证：非重复，为 v7.2 换代实现
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 接受上游 v7.2 LRO 换代实现（原生多设备互斥 + 8 LRO 硬件队列 + 官方 8.2Gbps 实测），替换 fanboy/11 + 9990 血统；rebase 到 6.18.5x 与其余补丁裁决完成后统一实施（本次仅登记决定，未动 rules）；v1-safe 不进（首刷保守档最小差异）
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-003
