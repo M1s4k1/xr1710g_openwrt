@@ -332,12 +332,12 @@ ai-risk: medium
 ai-confidence: medium
 ai-validation: 取三个提交 diff，对照 aggregate 的 XR1710G DTS/PCIe 补丁与 mt76-0023 修法；确认 retrain workaround 与 mt76-0023 的 fail-fast 方案是否互斥
 ai-open-questions: naoki 的 PCIe 调参与 genshanxinli mt76-0023 的方案哪个更接近根因；是否可在我们 DTS 补丁中吸收 tuning 部分
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施。与挂起的 PCIe AER 议题（aggregate mt76-0023，晚于快照未纳入；上游 mt76-0014 已被 F170 实机否证）同域，两条技术路线互证价值高；同名设备 DTS 级改动、落地形态清晰。实施时：diff 对照 aggregate 现有 XR1710G DTS/PCIe 补丁与 mt76-0023 修法，确认 retrain workaround 替换与 fail-fast 方案是否互斥，再决定吸收形态；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-002
