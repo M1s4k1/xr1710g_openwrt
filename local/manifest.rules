@@ -44,6 +44,32 @@
 9723-pstore-ramoops-22473-2f7d2d02.patch    # 理由: an7581 ramoops 崩溃日志（补漏；原 fanboy/10 default）
 9724-cmonroe-stability-8c530f05.patch    # 理由: cmonroe 稳定性集（补漏；原 fanboy/17 default）
 9725-smartrg-stability-b45d5117.patch    # 理由: smartrg 992-20/21 适配（补漏；原 fanboy/18 default）
+9735-9017-w1700k-apps-pack-core.patch    # 理由: NPU/flowsense 应用包树创建（flowsense/npu/mlo/fancontrol 载体）（补漏：Phase 2b）
+9736-9018-flowsense-offload-new-arch.patch    # 理由: flowsense offload 新架构（rpcd 侧）（补漏：Phase 2b）
+9737-9019-npu-client-offload-accounting.patch    # 理由: NPU client offload 记账（补漏：Phase 2b）
+9738-9020-npu-memory-regions-dt.patch    # 理由: NPU 内存区域 DT（改 9402 创建的板 DTS）（补漏：Phase 2b）
+9739-9021-flowsense-sysfs-stats.patch    # 理由: flowsense sysfs 统计（补漏：Phase 2b）
+9740-9022-npu-ipv6-udp-visibility.patch    # 理由: NPU IPv6/UDP 可见性（补漏：Phase 2b）
+9741-9023-npu-rpc-graceful-tools.patch    # 理由: NPU RPC 优雅工具（补漏：Phase 2b）
+9742-9032-npu-ppe-per-flow-conntrack-stats.patch    # 理由: NPU PPE per-flow conntrack 统计（补漏：Phase 2b）
+9743-9024-bridge-hw-offload-deps-table.patch    # 理由: bridge hw offload 依赖表（依赖 9721/9722）（补漏：Phase 2b）
+9744-9026-bridge-flow-offload-init-conntrack.patch    # 理由: bridge flow offload 初始 conntrack（补漏：Phase 2b）
+9745-9035-airoha-ppe-flow-stats-coexist.patch    # 理由: airoha PPE flow 统计共存（补漏：Phase 2b）
+9746-9048-xr1710g-airoha-ppe-flush-sram-err.patch    # 理由: airoha PPE SRAM flush 错误处理（补漏：Phase 2b）
+9747-9047-xr1710g-airoha-ppe-bind-rate.patch    # 理由: airoha PPE bind rate（补漏：Phase 2b）
+9748-9036-xr1710g-airoha-npu-dirty-lazy-clean.patch    # 理由: airoha NPU dirty lazy clean（补漏：Phase 2b）
+9749-9038-xr1710g-pcs-usxgmii-stabilize.patch    # 理由: PCS USXGMII 稳定化（补漏：Phase 2b）
+9750-9039-xr1710g-airoha-ppe-keep-local-flows-cpu.patch    # 理由: PPE 保持 local flow 在 CPU（补漏：Phase 2b）
+9751-9040-xr1710g-airoha-pinctrl-force-gpio.patch    # 理由: airoha pinctrl force GPIO（补漏：Phase 2b）
+9752-9041-xr1710g-rtk-serdes-bundle.patch    # 理由: RTK SerDes bundle（与 011 同域）（补漏：Phase 2b）
+9753-9044-xr1710g-pcs-usxgmii-rate-adaptation.patch    # 理由: PCS USXGMII 速率自适应（补漏：Phase 2b）
+9754-9045-xr1710g-airoha-rx-recover-irq-thermal.patch    # 理由: airoha RX 恢复 IRQ/thermal（补漏：Phase 2b）
+9755-9029-xr1710g-airoha-pcs-jcpll-tclvar-recal.patch    # 理由: PCS JCPLL/TCLVAR 重校准（补漏：Phase 2b）
+9756-9046-xr1710g-fix-992-20-context.patch    # 理由: 992-20 上下文修复（与 9725 smartrg 配套）（补漏：Phase 2b）
+9757-9050-xr1710g-airoha-mib-stats-lossless.patch    # 理由: airoha MIB 统计无损（补漏：Phase 2b）
+9758-9058-xr1710g-hwrng-scu-clock-order.patch    # 理由: hwrng/TRNG SCU 时钟门顺序（补漏：Phase 2b）
+9759-9059-xr1710g-hwrng-scu-dts.patch    # 理由: hwrng/TRNG DTS（补漏：Phase 2b）
+9760-9061-xr1710g-airoha-npu-mailbox-recovery.patch    # 理由: NPU mailbox 恢复（元补丁：生成 target 9999-30..35）（补漏：Phase 2b）
 9713-regdb-us-6ghz-no-no-ir.patch -> package/firmware/wireless-regdb/patches/    # 理由: US 6GHz 去 NO-IR（复制型：包源码 patch）
 9714-regdb-us-power-limits-uni1-29.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-1 29dBm 功率上限（复制型）
 9715-regdb-us-unii3-4-160mhz-30.patch -> package/firmware/wireless-regdb/patches/    # 理由: US UNII-3/4 160MHz 30dBm（复制型）

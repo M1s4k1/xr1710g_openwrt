@@ -1,0 +1,291 @@
+# Phase 2b 移植（2026-10-21）：原体 aggregate/patches/root/9050-xr1710g-airoha-mib-stats-lossless.patch
+#   验证：顺序链内（25 已移植件为底 + ORDER 序）对 openwrt main@63f702f1c git apply 干净
+# Reason: airoha MIB 统计无损
+# 档位：func（v1-safe 不含）
+diff --git a/target/linux/airoha/patches-6.18/9999-net-airoha-z-mib-stats-lossless.patch b/target/linux/airoha/patches-6.18/9999-net-airoha-z-mib-stats-lossless.patch
+new file mode 100644
+--- /dev/null
++++ b/target/linux/airoha/patches-6.18/9999-net-airoha-z-mib-stats-lossless.patch
+@@ -0,0 +1,282 @@
++# Source: Gilly1970/Gemtek-W1700K-6.18 openwrt-patches/963（2026-09-12 吸收；B2 全量对账发现）
++# Upstream: n/a（作者自持）
++# Reason: airoha GDM MIB 采集三处缺陷（B2 实测本仓 grep mib_prev|runt64 = 0 命中）：
++#   ① 64 位 H+L 计数器（TX/RX OK pkt/byte、E64/L64/L127 等）被 `+=` 累加——硬件本身已累计，
++#      每次 poll 再加一遍 → /sys/class/net 统计随 poll 次数虚增；改为直接赋值（硬件绝对值）。
++#   ② 32 位计数器（drop/BC/MC/RUNT）无绕回处理，硬件绕回后统计倒退；改为 delta 累加
++#      （`+= (u32)(val - mib_prev.x)`）并保存上次值。
++#   ③ RUNT(32 位) 与 E64(64 位) 混入同一 tx_len[0]/rx_len[0] 桶，且累加口径不一致；
++#      改为 `tx_runt64/rx_runt64` 运行和 + 明确赋值。
++#   另加 port->lock 串行化（多 GDM 端口共享 MIB 配置寄存器）。
++# 影响：本仓 F38 的 rx_errors 判定口径依赖该统计——修好后不再虚增/倒退。
++# 档位 #EXP：改的是**对外可见的统计语义**（累加→绝对），需实机确认 sysfs/ethtool/FlowSense
++#   读数与既有判据仍自洽后再毕业 default。
++# 顺序：置于 9025 之后，且内层名改 `z-mib-` 以**排在并发 SOE 系列（9999-net-airoha-soe-*）之后**——
++#   两者都改 airoha_eth.h（SOE 改 struct airoha_queue 218 区、本项改 struct airoha_hw_stats 245 区，
++#   结构体不同、语义不重叠），但本项插入 27 行会推移后文行号 → 若本项在前，SOE-14 hunk#2 失配
++#   （CI run 34675640335 实证）。改名后 SOE 先应用、本项最后，行号干净。
++diff --git a/drivers/net/ethernet/airoha/airoha_eth.c b/drivers/net/ethernet/airoha/airoha_eth.c
++index 59001fd4b6f7..e009266fd268 100644
++--- a/drivers/net/ethernet/airoha/airoha_eth.c
+++++ b/drivers/net/ethernet/airoha/airoha_eth.c
++@@ -1686,12 +1686,14 @@ static void airoha_qdma_stop_napi(struct airoha_qdma *qdma)
++ 	}
++ }
++ 
++-static void airoha_dev_get_hw_stats(struct airoha_gdm_dev *dev)
+++static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
++ {
++ 	struct airoha_gdm_port *port = dev->port;
++ 	struct airoha_eth *eth = dev->eth;
++ 	u32 val, i = 0;
++ 
+++	spin_lock(&port->lock);
+++
++ 	/* Read relevant MIB for GDM with multiple port attached */
++ 	if (port->id == AIROHA_GDM3_IDX || port->id == AIROHA_GDM4_IDX)
++ 		airoha_fe_rmw(eth, REG_FE_GDM_MIB_CFG(port->id),
++@@ -1701,152 +1703,157 @@ static void airoha_dev_get_hw_stats(struct airoha_gdm_dev *dev)
++ 
++ 	u64_stats_update_begin(&dev->stats.syncp);
++ 
++-	/* TX */
+++	/* TX - 64-bit H+L registers: hw accumulates the total, read directly. */
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_OK_PKT_CNT_H(port->id));
++-	dev->stats.tx_ok_pkts += ((u64)val << 32);
+++	dev->stats.tx_ok_pkts = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_OK_PKT_CNT_L(port->id));
++ 	dev->stats.tx_ok_pkts += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_OK_BYTE_CNT_H(port->id));
++-	dev->stats.tx_ok_bytes += ((u64)val << 32);
+++	dev->stats.tx_ok_bytes = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_OK_BYTE_CNT_L(port->id));
++ 	dev->stats.tx_ok_bytes += val;
++ 
+++	/* TX - 32-bit registers: accumulate delta to handle wrap-around. */
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_DROP_CNT(port->id));
++-	dev->stats.tx_drops += val;
+++	dev->stats.tx_drops += (u32)(val - dev->stats.mib_prev.tx_drops);
+++	dev->stats.mib_prev.tx_drops = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_BC_CNT(port->id));
++-	dev->stats.tx_broadcast += val;
+++	dev->stats.tx_broadcast += (u32)(val - dev->stats.mib_prev.tx_broadcast);
+++	dev->stats.mib_prev.tx_broadcast = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_MC_CNT(port->id));
++-	dev->stats.tx_multicast += val;
+++	dev->stats.tx_multicast += (u32)(val - dev->stats.mib_prev.tx_multicast);
+++	dev->stats.mib_prev.tx_multicast = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_RUNT_CNT(port->id));
++-	dev->stats.tx_len[i] += val;
+++	dev->stats.mib_prev.tx_runt64 +=
+++		(u32)(val - dev->stats.mib_prev.tx_runt);
+++	dev->stats.mib_prev.tx_runt = val;
++ 
+++	/* tx_len[0]: RUNT (32-bit, delta) + E64 (64-bit, absolute). */
+++	dev->stats.tx_len[i] = dev->stats.mib_prev.tx_runt64;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_E64_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] += (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_E64_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L64_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L64_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L127_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L127_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L255_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L255_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L511_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L511_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L1023_CNT_H(port->id));
++-	dev->stats.tx_len[i] += ((u64)val << 32);
+++	dev->stats.tx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_L1023_CNT_L(port->id));
++ 	dev->stats.tx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_TX_ETH_LONG_CNT(port->id));
++-	dev->stats.tx_len[i++] += val;
+++	dev->stats.tx_len[i++] += (u32)(val - dev->stats.mib_prev.tx_long);
+++	dev->stats.mib_prev.tx_long = val;
++ 
++ 	/* RX */
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_OK_PKT_CNT_H(port->id));
++-	dev->stats.rx_ok_pkts += ((u64)val << 32);
+++	dev->stats.rx_ok_pkts = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_OK_PKT_CNT_L(port->id));
++ 	dev->stats.rx_ok_pkts += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_OK_BYTE_CNT_H(port->id));
++-	dev->stats.rx_ok_bytes += ((u64)val << 32);
+++	dev->stats.rx_ok_bytes = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_OK_BYTE_CNT_L(port->id));
++ 	dev->stats.rx_ok_bytes += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_DROP_CNT(port->id));
++-	dev->stats.rx_drops += val;
+++	dev->stats.rx_drops += (u32)(val - dev->stats.mib_prev.rx_drops);
+++	dev->stats.mib_prev.rx_drops = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_BC_CNT(port->id));
++-	dev->stats.rx_broadcast += val;
+++	dev->stats.rx_broadcast += (u32)(val - dev->stats.mib_prev.rx_broadcast);
+++	dev->stats.mib_prev.rx_broadcast = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_MC_CNT(port->id));
++-	dev->stats.rx_multicast += val;
+++	dev->stats.rx_multicast += (u32)(val - dev->stats.mib_prev.rx_multicast);
+++	dev->stats.mib_prev.rx_multicast = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ERROR_DROP_CNT(port->id));
++-	dev->stats.rx_errors += val;
+++	dev->stats.rx_errors += (u32)(val - dev->stats.mib_prev.rx_errors);
+++	dev->stats.mib_prev.rx_errors = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_CRC_ERR_CNT(port->id));
++-	dev->stats.rx_crc_error += val;
+++	dev->stats.rx_crc_error += (u32)(val - dev->stats.mib_prev.rx_crc_error);
+++	dev->stats.mib_prev.rx_crc_error = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_OVERFLOW_DROP_CNT(port->id));
++-	dev->stats.rx_over_errors += val;
+++	dev->stats.rx_over_errors += (u32)(val - dev->stats.mib_prev.rx_over_errors);
+++	dev->stats.mib_prev.rx_over_errors = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_FRAG_CNT(port->id));
++-	dev->stats.rx_fragment += val;
+++	dev->stats.rx_fragment += (u32)(val - dev->stats.mib_prev.rx_fragment);
+++	dev->stats.mib_prev.rx_fragment = val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_JABBER_CNT(port->id));
++-	dev->stats.rx_jabber += val;
+++	dev->stats.rx_jabber += (u32)(val - dev->stats.mib_prev.rx_jabber);
+++	dev->stats.mib_prev.rx_jabber = val;
++ 
++ 	i = 0;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_RUNT_CNT(port->id));
++-	dev->stats.rx_len[i] += val;
+++	dev->stats.mib_prev.rx_runt64 +=
+++		(u32)(val - dev->stats.mib_prev.rx_runt);
+++	dev->stats.mib_prev.rx_runt = val;
++ 
+++	/* rx_len[0]: RUNT (32-bit, delta) + E64 (64-bit, absolute). */
+++	dev->stats.rx_len[i] = dev->stats.mib_prev.rx_runt64;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_E64_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] += (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_E64_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L64_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L64_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L127_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L127_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L255_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L255_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L511_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L511_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L1023_CNT_H(port->id));
++-	dev->stats.rx_len[i] += ((u64)val << 32);
+++	dev->stats.rx_len[i] = (u64)val << 32;
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_L1023_CNT_L(port->id));
++ 	dev->stats.rx_len[i++] += val;
++ 
++ 	val = airoha_fe_rr(eth, REG_FE_GDM_RX_ETH_LONG_CNT(port->id));
++-	dev->stats.rx_len[i++] += val;
+++	dev->stats.rx_len[i] += (u32)(val - dev->stats.mib_prev.rx_long);
+++	dev->stats.mib_prev.rx_long = val;
++ 
++ 	u64_stats_update_end(&dev->stats.syncp);
++-}
++-
++-static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
++-{
++-	struct airoha_gdm_port *port = dev->port;
++-	int i;
++-
++-	spin_lock(&port->lock);
++-
++-	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
++-		if (port->devs[i])
++-			airoha_dev_get_hw_stats(port->devs[i]);
++-	}
++-
++-	/* Reset MIB counters */
++-	airoha_fe_set(dev->eth, REG_FE_GDM_MIB_CLEAR(port->id),
++-		      FE_GDM_MIB_RX_CLEAR_MASK | FE_GDM_MIB_TX_CLEAR_MASK);
++ 
++ 	spin_unlock(&port->lock);
++ }
++diff --git a/drivers/net/ethernet/airoha/airoha_eth.h b/drivers/net/ethernet/airoha/airoha_eth.h
++index f6d01a8e8da1..dae9cfa6cc06 100644
++--- a/drivers/net/ethernet/airoha/airoha_eth.h
+++++ b/drivers/net/ethernet/airoha/airoha_eth.h
++@@ -245,6 +245,33 @@ struct airoha_hw_stats {
++ 	u64 rx_fragment;
++ 	u64 rx_jabber;
++ 	u64 rx_len[7];
+++
+++	struct {
+++		/* Previous HW register values for 32-bit counter delta
+++		 * tracking. Storing the last seen value and accumulating
+++		 * (u32)(curr - prev) into the 64-bit software counter
+++		 * handles wrap-around transparently via unsigned arithmetic.
+++		 * tx_runt64/rx_runt64 hold the running sum of runt deltas.
+++		 * These fields are never reported to userspace.
+++		 */
+++		u32 tx_drops;
+++		u32 tx_broadcast;
+++		u32 tx_multicast;
+++		u32 tx_runt;
+++		u32 tx_long;
+++		u64 tx_runt64;
+++		u32 rx_drops;
+++		u32 rx_broadcast;
+++		u32 rx_multicast;
+++		u32 rx_errors;
+++		u32 rx_crc_error;
+++		u32 rx_over_errors;
+++		u32 rx_fragment;
+++		u32 rx_jabber;
+++		u32 rx_runt;
+++		u32 rx_long;
+++		u64 rx_runt64;
+++	} mib_prev;
++ };
++ 
++ enum {
