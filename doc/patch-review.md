@@ -487,12 +487,12 @@ ai-risk: low
 ai-confidence: high
 ai-validation: 无
 ai-open-questions: 无
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+absorb-stock: n
+absorb-v1-safe: n
+status: reject
+reason: 不同硬件（XG2010G/Nokia XG-040G），与 XR1710G 无交集；唯一意义（fork 活跃度佐证）已由 010/011 的存在本身证明
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: naoki-20261021-007
