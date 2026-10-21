@@ -114,13 +114,13 @@ ai-recommended-tier: pending
 ai-risk: medium
 ai-confidence: medium
 ai-validation: 取两个提交的 patch 内容，对照 9501 网口命名补丁（gdm2→eth1 / gdm4→eth2）检查是否引用 GDM 节点名；在一次性 OpenWrt 树 dry-run
-ai-open-questions: QoS 补丁是否按设备名寻址 GDM 节点（若是则与 9501 冲突需适配）；059895c 的完整文件清单未逐项核对
-absorb-stock:
-absorb-v1-safe:
-status: pending
-reason:
-reviewer:
-reviewed_at:
+ai-open-questions: QoS 补丁是否按设备名寻址 GDM 节点（若是则与 9501 冲突需适配）；059895c 的完整文件清单未逐项核对——已核对（2026-10-21）：d4083ed 为驱动层补丁（airoha_eth.c/.h），与 9501 的 DTS netdev-name / board.d 两层不相交、零冲突；059895c 实为 18 文件 +1559/−571 大刷新：8 个新驱动修复（MODULE_LICENSE GPL-2.0 修正、BQL underflow、MIB 无损化等）+ 对 916-02 的 129 行修改（将随 002 的 v7.2 换血作废）
+absorb-stock: y
+absorb-v1-safe: n
+status: accept
+reason: 挂起实施，与 002 同批归入 6.18.5x rebase 专项；实施时对 059895c 的 18 文件逐项甄别——8 个新驱动修复评估吸收，对 916-02/defer-GDM3/MTU 的修改预计随 v7.2 作废剔除；GDM 与 9501 无冲突已证实；v1-safe 不进
+reviewer: M1s4k1
+reviewed_at: 2026-10-21
 ```
 
 ### Candidate: openwrt-20261021-004
