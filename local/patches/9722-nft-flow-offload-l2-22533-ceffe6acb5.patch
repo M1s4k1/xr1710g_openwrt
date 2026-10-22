@@ -1,7 +1,18 @@
-# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/vendor/fanboy/06-nft-flow-offload-l2-22533-ceffe6acb5.patch
-# Reason: nft_flow_offload L2 bridge offload（675-01..03 三合一形态）
-#   验证：对 openwrt main@63f702f1c git apply --check 干净
-# 档位：func（v1-safe 不含）
+# Phase 2b 适配版（2026-10-22，CI func 首跑暴露）：原体 aggregate/patches/vendor/fanboy/06-nft-flow-offload-l2-22533-ceffe6acb5.patch
+#   本补丁是元补丁：在树里创建 pending-6.18/675-01/02/03 三个内核补丁（nft L2 bridge offload 三合一）。
+#   rebase 到 kernel 6.18.55（原基线 6.18.44 + openwrt pending 演进）：
+#   675-02 nf_flow_table_path.c：
+#     - hunk#7 重锚——上游 6.18.5x 在 nft_dev_path_info() 后新增 info.outdev 处理
+#       （if (info.outdev) route->tuple[dir].out.ifindex = ...），以【上下文】形态保留
+#       （不可删：那是上游 bug 修复，删了即回归）；
+#     - hunk#9 重锚——上游把合并的 if (A && B) {...} 拆成两个独立 if，新代码按拆分
+#       结构重写（语义等价：任一方向失败且 is_bridging 则释放双 dst 并返回 -ENOENT）。
+#   675-03 nf_conntrack_bridge.c：
+#     - hunk#1 重锚——上游在 default: 分支新增 nf_reset_ct(skb)；旧侧补删该行，
+#       新侧 notrack: 体内补 nf_reset_ct(skb)（保留上游修复）。
+# 验证：下载 kernel 6.18.55 官方 tarball，抽取 9 个相关文件，675-01→02→03 全序列
+#   patch -p1 干净；9722 本体对 pin 树 git apply --check 干净。
+
 diff --git a/target/linux/generic/pending-6.18/675-01-net-forward-path-exports-bridge-helper-and-vlan-modes.patch b/target/linux/generic/pending-6.18/675-01-net-forward-path-exports-bridge-helper-and-vlan-modes.patch
 new file mode 100644
 index 0000000000..8f65031e83
@@ -129,12 +140,13 @@ index 0000000000..8f65031e83
 + EXPORT_SYMBOL_GPL(dev_fill_forward_path);
 + 
 + /* must be called under rcu_read_lock(), as we dont take a reference */
+
 diff --git a/target/linux/generic/pending-6.18/675-02-nft_flow_offload-bridge-offload-and-flowtable-type.patch b/target/linux/generic/pending-6.18/675-02-nft_flow_offload-bridge-offload-and-flowtable-type.patch
 new file mode 100644
 index 0000000000..15c8049821
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/675-02-nft_flow_offload-bridge-offload-and-flowtable-type.patch
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,275 @@
 +--- a/net/netfilter/nf_flow_table_inet.c
 ++++ b/net/netfilter/nf_flow_table_inet.c
 +@@ -75,6 +75,8 @@
@@ -263,7 +275,7 @@ index 0000000000..15c8049821
 + 			break;
 + 		}
 + 	}
-+@@ -189,22 +200,52 @@
++@@ -189,25 +200,55 @@
 + 	return found;
 + }
 + 
@@ -315,6 +327,9 @@ index 0000000000..15c8049821
 ++
 ++	if (nft_dev_fill_forward_path(&ctx, dst, ct, dir, ha, &stack) >= 0)
 + 		nft_dev_path_info(&stack, &info, ha, &ft->data);
++ 
++ 	if (info.outdev)
++ 		route->tuple[dir].out.ifindex = info.outdev->ifindex;
 + 
 +-	if (!info.indev || !nft_flowtable_find_dev(info.indev, ft))
 +-		return;
@@ -381,34 +396,39 @@ index 0000000000..15c8049821
 + 	switch (nft_pf(pkt)) {
 + 	case NFPROTO_IPV4:
 + 		fl.u.ip4.daddr = ct->tuplehash[dir].tuple.src.u3.ip;
-+@@ -262,13 +356,19 @@
-+ 		return -ENOENT;
-+ 	}
-+ 
-++skip_l3:
-++
++@@ -266,9 +266,21 @@
 + 	nft_default_forward_path(route, this_dst, dir);
 + 	nft_default_forward_path(route, other_dst, !dir);
 + 
-+ 	if (route->tuple[dir].xmit_type	== FLOW_OFFLOAD_XMIT_NEIGH &&
-+ 	    route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH) {
++-	if (route->tuple[dir].xmit_type	== FLOW_OFFLOAD_XMIT_NEIGH)
 +-		nft_dev_forward_path(route, ct, dir, ft);
++-	if (route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH)
 +-		nft_dev_forward_path(route, ct, !dir, ft);
-++		if ((nft_dev_forward_path(pkt, is_bridging, route, ct, dir, dir, ft) ||
-++		     nft_dev_forward_path(pkt, is_bridging, route, ct, !dir, dir, ft)) && is_bridging) {
+++	if (route->tuple[dir].xmit_type	== FLOW_OFFLOAD_XMIT_NEIGH) {
+++		if (nft_dev_forward_path(pkt, is_bridging, route, ct, dir, dir, ft) &&
+++		    is_bridging) {
 ++			dst_release(route->tuple[dir].dst);
 ++			dst_release(route->tuple[!dir].dst);
 ++			return -ENOENT;
 ++		}
-+ 	}
+++	}
+++	if (route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH) {
+++		if (nft_dev_forward_path(pkt, is_bridging, route, ct, !dir, dir, ft) &&
+++		    is_bridging) {
+++			dst_release(route->tuple[dir].dst);
+++			dst_release(route->tuple[!dir].dst);
+++			return -ENOENT;
+++		}
+++	}
 + 
 + 	return 0;
+
 diff --git a/target/linux/generic/pending-6.18/675-03-netfilter-bridge-conntrack-vlan-pppoe-encapsulation.patch b/target/linux/generic/pending-6.18/675-03-netfilter-bridge-conntrack-vlan-pppoe-encapsulation.patch
 new file mode 100644
 index 0000000000..6ac8821741
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/675-03-netfilter-bridge-conntrack-vlan-pppoe-encapsulation.patch
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,234 @@
 +--- a/include/linux/netfilter_bridge.h
 ++++ b/include/linux/netfilter_bridge.h
 +@@ -10,6 +10,12 @@
@@ -437,7 +457,7 @@ index 0000000000..6ac8821741
 + #include <linux/netfilter/nf_tables.h>
 + #include <net/netfilter/nf_tables.h>
 + 
-+@@ -237,58 +241,115 @@
++@@ -237,59 +241,116 @@
 + 	return 0;
 + }
 + 
@@ -545,6 +565,7 @@ index 0000000000..6ac8821741
 + 		ret = nf_ct_br_defrag6(skb, &bridge_state);
 + 		break;
 + 	default:
++-		nf_reset_ct(skb);
 +-		nf_ct_set(skb, NULL, IP_CT_UNTRACKED);
 +-		return NF_ACCEPT;
 ++		goto notrack;
@@ -558,6 +579,7 @@ index 0000000000..6ac8821741
 ++
 ++notrack:
 ++	__skb_push(skb, offset);
+++		nf_reset_ct(skb);
 ++	nf_ct_set(skb, NULL, IP_CT_UNTRACKED);
 ++	return NF_ACCEPT;
 + }
