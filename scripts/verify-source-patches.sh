@@ -26,7 +26,7 @@ set -euo pipefail
 export LC_ALL=C LANG=C
 
 die() { echo "::error::$*" >&2; exit 2; }
-log() { printf '%s\n' "$*"; }
+log() { printf '%s\n' "$*" >&2; }   # 走 stderr：勿污染 $(pkg_workdir) 等命令替换
 
 # ---------- 参数 ----------
 TREE=""
@@ -86,30 +86,99 @@ extract_needed() { # <tar包> <带前缀的目标列表文件> <目标根目录>
   fi
 }
 
-# git 包：按 PKG_SOURCE_URL/VERSION 克隆到缓存（首次）并建工作副本
-git_pkg_workdir() { # <包目录> <工作目录名> → 输出工作副本路径
+# 提取 Makefile 变量值（兼容 := 与 =；bash 参数展开免 sed 转义）
+mkvar() { # <Makefile> <变量名>
+  local raw
+  raw="$( { grep -E "^$2[[:space:]]*:?=" "$1" || true; } | head -1)"
+  raw="${raw#*=}"        # 剥到第一个 =
+  raw="${raw#:}"         # := 形式残留的前导冒号
+  raw="${raw#"${raw%%[![:space:]]*}"}"   # 去前导空白
+  raw="${raw%"${raw##*[![:space:]]}"}"   # 去尾随空白
+  printf '%s' "$raw"
+}
+
+# 解析 openwrt make 变量与镜像宏
+resolve_url() {
+  local u="$1"
+  u="${u//\$(PROJECT_GIT)/https://git.openwrt.org}"           # openwrt 定义：PROJECT_GIT = https://git.openwrt.org
+  u="${u//\$(PROJECT_GIT_MIRROR)/https://git.openwrt.org}"
+  # git.openwrt.org/project/<n>.git → GitHub 镜像（更易达、支持按 SHA fetch）
+  u="${u/https:\/\/git.openwrt.org\/project\//https://github.com/openwrt/}"
+  u="${u//@KERNEL\//https://cdn.kernel.org/}"
+  echo "$u"
+}
+
+# 包源码工作副本：git 包（PKG_SOURCE_VERSION）或 tarball 包（PKG_SOURCE）
+pkg_workdir() { # <包相对目录> <显示名> → 输出工作副本路径
   local pkgdir="$1" name="$2"
-  local mk="$TREE/$(relpath "$pkgdir")/Makefile"
+  local mk="$TREE/$pkgdir/Makefile"
   [[ -f "$mk" ]] || die "找不到 Makefile：$mk"
-  local url ver
-  url="$( { grep -E '^PKG_SOURCE_URL:=' "$mk" || true; } | head -1 | sed 's/^PKG_SOURCE_URL:=//; s/[[:space:]]*$//')"
-  ver="$( { grep -E '^PKG_SOURCE_VERSION:=' "$mk" || true; } | head -1 | sed 's/^PKG_SOURCE_VERSION:=//; s/[[:space:]]*$//')"
-  [[ -n "$url" && -n "$ver" ]] || die "$name：Makefile 无 PKG_SOURCE_URL/VERSION"
-  local cachedir="$CACHE/git-$name-$ver"
-  if [[ ! -d "$cachedir/.git" ]]; then
-    log "  克隆 $name @ ${ver:0:12}（首次，入缓存）"
-    rm -rf "$cachedir"
-    git init -q "$cachedir"
-    git -C "$cachedir" remote add origin "$url"
-    git -C "$cachedir" fetch -q --depth 1 origin "$ver" 2>/dev/null \
-      || git -C "$cachedir" fetch -q origin "$ver" 2>/dev/null \
-      || git -C "$cachedir" fetch -q --depth 1 origin 2>/dev/null \
-      || die "$name：fetch $ver 失败（$url）"
-    git -C "$cachedir" checkout -q FETCH_HEAD 2>/dev/null || true
+  local url ver srcfile
+  url="$(mkvar "$mk" PKG_SOURCE_URL)"
+  ver="$(mkvar "$mk" PKG_SOURCE_VERSION)"
+  srcfile="$(mkvar "$mk" PKG_SOURCE)"
+  # 展开 PKG_SOURCE 里的 make 变量（$(PKG_NAME)/$(PKG_VERSION)）
+  local pkgname pkgver
+  pkgname="$(mkvar "$mk" PKG_NAME)"
+  pkgver="$(mkvar "$mk" PKG_VERSION)"
+  srcfile="${srcfile//\$(PKG_NAME)/$pkgname}"
+  srcfile="${srcfile//\$(PKG_VERSION)/$pkgver}"
+  url="$(resolve_url "$url")"
+
+  # --- git 包 ---
+  if [[ -n "$ver" ]]; then
+    [[ -n "$url" ]] || die "$name：Makefile 无 PKG_SOURCE_URL"
+    local cachedir="$CACHE/git-$name-$ver"
+    if [[ ! -d "$cachedir/.git" ]]; then
+      log "  克隆 $name @ ${ver:0:12}（首次，入缓存）"
+      rm -rf "$cachedir"
+      git init -q "$cachedir"
+      git -C "$cachedir" remote add origin "$url"
+      git -C "$cachedir" fetch -q --depth 1 origin "$ver" 2>/dev/null         || git -C "$cachedir" fetch -q origin "$ver" 2>/dev/null         || git -C "$cachedir" fetch -q origin 2>/dev/null         || die "$name：fetch $ver 失败（$url）"
+      git -C "$cachedir" checkout -q FETCH_HEAD 2>/dev/null || true
+    fi
+    # 校验缓存/HEAD 确实在目标 commit
+    local head_sha
+    head_sha="$(git -C "$cachedir" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$head_sha" != "$ver" ]]; then
+      git -C "$cachedir" fetch -q origin "$ver" 2>/dev/null || true
+      git -C "$cachedir" checkout -q "$ver" 2>/dev/null         || die "$name：无法 checkout $ver（缓存 HEAD=${head_sha:0:12}）"
+    fi
+    local wd="$WORK/git-$name"
+    rm -rf "$wd"
+    git clone -q --shared "$cachedir" "$wd" 2>/dev/null || cp -a "$cachedir" "$wd"
+    git -C "$wd" checkout -q "$ver" 2>/dev/null || true
+    echo "$wd"
+    return 0
   fi
-  local wd="$WORK/git-$name"
-  rm -rf "$wd"
-  git clone -q --shared "$cachedir" "$wd" 2>/dev/null || cp -a "$cachedir" "$wd"
+
+  # --- tarball 包 ---
+  [[ -n "$srcfile" ]] || die "$name：Makefile 无 PKG_SOURCE_VERSION 也无 PKG_SOURCE"
+  local tarball="$CACHE/$srcfile"
+  if [[ ! -s "$tarball" ]] || ! { tar -tf "$tarball" > /dev/null 2>&1 || tar --zstd -tf "$tarball" > /dev/null 2>&1; }; then
+    log "  下载 $name 源码（首次）"
+    rm -f "$tarball"
+    # openwrt 镜像优先（构建同源），退解析后的上游 URL
+    curl -fsSL --retry 3 -o "$tarball" "https://sources.cdn.openwrt.org/$srcfile" 2>/dev/null || true
+    if [[ ! -s "$tarball" && -n "$url" ]]; then
+      curl -fsSL --retry 3 -o "$tarball" "$url$srcfile" 2>/dev/null || true
+    fi
+    { tar -tf "$tarball" > /dev/null 2>&1 || tar --zstd -tf "$tarball" > /dev/null 2>&1; }       || die "$name 源码下载失败/损坏：$tarball"
+  fi
+  local wd="$WORK/tar-$name"
+  mkdir -p "$wd"
+  # 按需抽取（补丁目标文件）；tarball 恒带 <name>-<ver>/ 顶层目录，须补前缀
+  local list="$WORK/${name}-files.txt"
+  collect_targets "$TREE/$pkgdir/patches"/*.patch > "$list"
+  local tprefix="${srcfile%.tar.xz}"; tprefix="${tprefix%.tar.zst}"; tprefix="${tprefix%.tar.gz}"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    mkdir -p "$wd/$(dirname "$f")"
+    { tar -xf "$tarball" -C "$wd" -- "$tprefix/$f" 2>/dev/null || tar --zstd -xf "$tarball" -C "$wd" -- "$tprefix/$f" 2>/dev/null; } || true
+  done < "$list"
+  # 顶层目录存在则应用根目录随之调整（与 kernel/backports 组同款）
+  [[ -d "$wd/$tprefix" ]] && wd="$wd/$tprefix"
   echo "$wd"
 }
 
@@ -120,6 +189,7 @@ relpath() { # 把 $TREE 相对路径输出（参数可能是绝对或相对）
 # 应用一组补丁（目录内按文件名序），报告失败
 apply_set() { # <组标签> <工作副本根> <补丁目录（相对树）...>
   local label="$1" wd="$2"; shift 2
+  [[ -d "$wd" ]] || die "[$label] 工作目录不存在：$wd（源码获取失败或被污染）"
   local patches=() d
   for d in "$@"; do
     local pd="$TREE/$d"
@@ -159,11 +229,29 @@ our_kernel_patch_files() {
 verify_kernel() {
   log "-- 内核（Linux $KVER）--"
   local tarball="$CACHE/linux-$KVER.tar.xz"
-  if [[ ! -s "$tarball" ]]; then
-    log "  下载内核源码包（首次）"
+  # 完整性校验：缓存恢复或下载后都可能是坏包（CI 曾下载到不完整文件）。
+  # tar -t 全量列目录一次（约 6s）；坏包必须响亮失败，否则后续 patch 全部
+  # "No file to patch" 被忽略 ⇒ 假干净（比响亮的失败更危险）。
+  verify_tarball() { # <包> <最小字节>
+    local sz
+    sz="$(wc -c < "$1" 2>/dev/null || echo 0)"
+    [[ "$sz" -gt "${2:-1000000}" ]] || return 1
+    { tar -tJf "$1" > /dev/null 2>&1 || tar -tzf "$1" > /dev/null 2>&1; }
+  }
+  if [[ ! -s "$tarball" ]] || ! verify_tarball "$tarball" 50000000; then
+    log "  下载内核源码包（缓存缺失或损坏：$( [[ -s "$tarball" ]] && echo 损坏 || echo 缺失 )）"
+    rm -f "$tarball"
+    # 双源：kernel.org 优先，失败/损坏则退 openwrt 镜像（CI 曾从 kernel.org
+    # 下载到不完整文件；坏包会被上面的完整性校验抓住并重下）
     curl -fsSL --retry 3 -o "$tarball" \
-      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz" \
-      || die "内核包下载失败（可手动放置于 $tarball）"
+      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz" || true
+    if ! verify_tarball "$tarball" 50000000; then
+      log "  kernel.org 源不可用或损坏，退 openwrt 镜像"
+      rm -f "$tarball"
+      curl -fsSL --retry 3 -o "$tarball" \
+        "https://sources.cdn.openwrt.org/linux-$KVER.tar.xz" || true
+    fi
+    verify_tarball "$tarball" 50000000 || die "内核包下载失败/损坏（可手动放置于 $tarball）"
   fi
   local wd="$WORK/linux"
   mkdir -p "$wd"
@@ -179,9 +267,7 @@ verify_kernel() {
   # 目标文件全集（我方补丁的 --- a/ 路径，排除 /dev/null）
   local list="$WORK/kfiles.txt"
   collect_targets "${ours[@]}" > "$list"
-  local prefix
-  prefix="$(tar -tJf "$tarball" 2>/dev/null | head -1 | cut -d/ -f1)"
-  [[ -n "$prefix" ]] || prefix="linux-$KVER"
+  local prefix="linux-$KVER"   # kernel.org tarball 恒解包到 linux-<ver>/（勿用 tar|head 探测：pipefail+坏包双坑）
   sed "s|^|$prefix/|" "$list" > "$list.prefixed"
   log "  抽取 $(( $(wc -l < "$list") )) 个目标文件"
   extract_needed "$tarball" "$list.prefixed" "$wd"
@@ -205,7 +291,7 @@ verify_kernel() {
       out="$(cd "$wd" && patch -p1 --batch --no-backup-if-mismatch < "$pd/$f" 2>&1)" || true
       if printf '%s' "$out" | grep -qE 'FAILED|malformed'; then
         local tag="主线"
-        case "$f" in 675-*|96[0-9]-*|97[0-9]-*|98[0-9]-*|9999-*) tag="我方" ;; esac
+        case "$f" in 675-*|961-*|976-*|980-*|9999-*) tag="我方" ;; esac
         echo "  ✗ [$tag] $f"
         printf '%s\n' "$out" | grep -E 'FAILED|malformed' | head -3 | sed 's/^/      /'
         failed=$((failed+1))
@@ -214,7 +300,7 @@ verify_kernel() {
         # 只对我方补丁警示（主线补丁的 ignored 多为部分抽取下的 BSD 假警报，
         # 且主线补丁由 openwrt 自身 CI 背书，以我方 ✗ 与 CI 结论为准）。
         case "$f" in
-          675-*|96[0-9]-*|97[0-9]-*|98[0-9]-*|9999-*)
+          675-*|961-*|976-*|980-*|9999-*)
             echo "  ⚠ [我方] $f — patch 提示 ignored/reversed（疑似已应用/superseded，CI 的 GNU patch 会直接判失败）"
             ;;
         esac
@@ -234,29 +320,26 @@ verify_mac80211() {
   log "-- mac80211（backports）--"
   local mk="$TREE/package/kernel/mac80211/Makefile"
   local ver
-  ver="$(grep -E '^PKG_SOURCE_VERSION:=' "$mk" | head -1 | sed 's/^PKG_SOURCE_VERSION:=//; s/[[:space:]]*$//')"
+  ver="$(mkvar "$mk" PKG_SOURCE_VERSION)"
   [[ -n "$ver" ]] || die "mac80211 PKG_SOURCE_VERSION 解析失败"
   local tarball="$CACHE/backports-$ver.tar.zst"
-  if [[ ! -s "$tarball" ]]; then
-    log "  下载 backports-$ver（首次）"
+  if [[ ! -s "$tarball" ]] || ! { tar --zstd -tf "$tarball" > /dev/null 2>&1; }; then
+    log "  下载 backports-$ver（缓存缺失或损坏）"
+    rm -f "$tarball"
     local url
     url="$(curl -fsSL --retry 3 "https://api.github.com/repos/openwrt/backports/releases/tags/backports-v$ver" \
       | grep -oE 'https://[^"]*backports-[^"]*\.tar\.zst' | head -1 || true)"
     [[ -n "$url" ]] || die "取不到 backports-v$ver 资产 URL"
     curl -fsSL --retry 3 -o "$tarball" "$url" || die "backports 下载失败"
+    { tar --zstd -tf "$tarball" > /dev/null 2>&1; } || die "backports 包损坏：$tarball"
   fi
   local wd="$WORK/backports"
   mkdir -p "$wd"
   local list="$WORK/bpfiles.txt"
   collect_targets "$TREE/package/kernel/mac80211/patches/subsys"/*.patch > "$list"
   # tar 内路径可能带顶层目录（如 backports-7.2/）——探测并补前缀
-  local bprefix
-  bprefix="$(tar --zstd -tf "$tarball" 2>/dev/null | head -1 | cut -d/ -f1)"
-  if [[ -n "$bprefix" && "$bprefix" != "net" && "$bprefix" != "include" ]]; then
-    sed "s|^|$bprefix/|" "$list" > "$list.prefixed"
-  else
-    cp "$list" "$list.prefixed"
-  fi
+  local bprefix="backports-$ver"   # release 资产恒解包到 backports-<ver>/
+  sed "s|^|$bprefix/|" "$list" > "$list.prefixed"
   log "  抽取 $(( $(wc -l < "$list") )) 个目标文件"
   extract_needed "$tarball" "$list.prefixed" "$wd"
   # 抽取结果带顶层目录前缀时，应用根目录随之调整（同 kernel 组）
@@ -265,21 +348,21 @@ verify_mac80211() {
 }
 
 # ===== git 包（mt76/regdb/firewall4/rpcd/iwinfo）：Makefile 版本 + 克隆 =====
-verify_git_pkg() { # <包相对目录> <显示名>
+verify_pkg() { # <包相对目录> <显示名>
   local pkgdir="$1" name="$2"
   log "-- $name --"
   local wd
-  wd="$(git_pkg_workdir "$pkgdir" "$name")"
+  wd="$(pkg_workdir "$pkgdir" "$name")"
   apply_set "$name" "$wd" "$pkgdir/patches" || FAILED_TOTAL=$((FAILED_TOTAL+1))
 }
 
 want kernel    && verify_kernel
 want mac80211  && verify_mac80211
-want mt76      && verify_git_pkg package/kernel/mt76 mt76
-want regdb     && verify_git_pkg package/firmware/wireless-regdb regdb
-want firewall4 && verify_git_pkg package/network/config/firewall4 firewall4
-want rpcd      && verify_git_pkg package/system/rpcd rpcd
-want iwinfo    && verify_git_pkg package/network/utils/iwinfo iwinfo
+want mt76      && verify_pkg package/kernel/mt76 mt76
+want regdb     && verify_pkg package/firmware/wireless-regdb regdb
+want firewall4 && verify_pkg package/network/config/firewall4 firewall4
+want rpcd      && verify_pkg package/system/rpcd rpcd
+want iwinfo    && verify_pkg package/network/utils/iwinfo iwinfo
 
 log ""
 if [[ $FAILED_TOTAL -eq 0 ]]; then
