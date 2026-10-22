@@ -22,8 +22,8 @@ candidate_patch: updates/mt76/mt76-20261020-001/candidate.patch
 patch_sha256: <sha256>
 files: package/kernel/mac802acme/foo.c
 hardware: MT7996; XR1710G applicability pending
-openwrt_dependency: 7f4f824691fb2258afe9eb9a37da46d3557c4043
-linux_dependency: 6.18.44
+openwrt_dependency: 63f702f1c0cebe2587aac10b63a02e964fc2a558
+linux_dependency: 6.18.55
 ai-summary: <fact-based summary>
 ai-overlap: none
 ai-conflict: none

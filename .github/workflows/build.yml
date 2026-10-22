@@ -6,13 +6,14 @@ name: build
 #   CI 每次全新环境，配合 ccache 重复构建显著加速。
 #
 # 仓库定位（2026-10-21 架构转向后）：以 OpenWrt 主线为基座，本仓库只带差异。
-#   CI 组合两份物料：① 本仓库（local/ 补丁集 + config/）；② OpenWrt 源码树（pin 到
-#   config/source-lock.env 的 OPENWRT_REF）。
+#   CI 组合两份物料：① 本仓库（local/ 补丁集 + config/）；② OpenWrt 源码树。
+#   **源码树 ref 只从 config/source-lock.env 的 OPENWRT_REF 读取**——运行时不可覆盖
+#   （曾有人填转向前旧 pin 被内核门禁拦下；换基座 = 改 source-lock.env 并提交）。
 #   流程：clone openwrt@pin → 内核版本门禁 → audit → apply-patches 应用本地补丁集
 #         → feeds + defconfig + seed + 符号门禁 → make → 上传产物。
 #
 # 触发方式：仅手动（workflow_dispatch）——Actions 页选 dev 分支 → Run workflow →
-#   选 profile（首次刷机建议 v1-safe；func = 含 NPU offload 全栈的正式档）。
+#   选 profile（首次刷机建议 v1-safe；func = 含 NPU offload 全栈）。
 
 on:
   workflow_dispatch:
@@ -25,10 +26,6 @@ on:
         options:
           - v1-safe
           - func
-      openwrt_ref:
-        description: 'OpenWrt 源码树 ref（默认 = source-lock.env 的 pin，Linux 6.18.55 基线快照）'
-        default: '63f702f1c0cebe2587aac10b63a02e964fc2a558'
-        required: true
       create_release:
         description: '构建成功后是否自动创建 GitHub Release'
         default: false
@@ -41,6 +38,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    outputs:
+      pin: ${{ steps.lock.outputs.pin }}
+      kver: ${{ steps.lock.outputs.kver }}
     env:
       PROFILE: ${{ github.event.inputs.profile || 'v1-safe' }}
       TREE: ${{ github.workspace }}/openwrt
@@ -65,26 +65,21 @@ jobs:
           [[ -n "$PIN" && -n "$KVER" ]] || { echo "::error::source-lock.env 解析失败"; exit 1; }
           echo "pin=$PIN" >> "$GITHUB_OUTPUT"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
-          echo "锁定：OpenWrt $PIN / Linux $KVER"
+          echo "锁定：OpenWrt ${PIN:0:12} / Linux $KVER"
 
       - name: 克隆 OpenWrt 源码树（pin ref）
         run: |
           set -euo pipefail
-          REF_INPUT="${{ github.event.inputs.openwrt_ref || '' }}"
-          REF="${REF_INPUT:-${{ steps.lock.outputs.pin }}}"
-          if [[ -n "$REF_INPUT" && "$REF_INPUT" != "${{ steps.lock.outputs.pin }}" ]]; then
-            echo "::warning::openwrt_ref 输入($REF_INPUT) 与 source-lock pin 不一致——补丁上下文可能不匹配"
-          fi
           git clone https://github.com/openwrt/openwrt.git "$TREE"
           cd "$TREE"
-          git checkout -q "$REF"
+          git checkout -q "${{ steps.lock.outputs.pin }}"
           echo "OpenWrt commit: $(git rev-parse --short HEAD)"
           # 内核版本硬门禁：必须等于 source-lock.env 的 LINUX_VERSION
           KVER="${{ steps.lock.outputs.kver }}"
           if grep -q "LINUX_VERSION-6\.18.*=.*\.${KVER#6.18.}" target/linux/generic/kernel-6.18 2>/dev/null; then
             echo "✓ 内核版本验证通过：Linux $KVER"
           else
-            echo "::error::当前 OpenWrt 树内核版本非 $KVER，构建补丁集必将失败！请检查 openwrt_ref！"
+            echo "::error::当前 OpenWrt 树内核版本非 $KVER，构建补丁集必将失败！请检查 source-lock.env 与 openwrt 历史！"
             grep 'LINUX_VERSION-6.18' target/linux/generic/kernel-6.18 2>/dev/null || true
             exit 1
           fi
@@ -98,7 +93,7 @@ jobs:
       - name: ccache 缓存配置
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: openwrt-${{ env.PROFILE }}-${{ github.event.inputs.openwrt_ref || 'pin' }}
+          key: openwrt-${{ env.PROFILE }}-${{ steps.lock.outputs.pin }}
           restore-keys: openwrt-${{ env.PROFILE }}-
           max-size: 3G
 
@@ -197,7 +192,7 @@ jobs:
           body: |
             ### 构建信息
             - **档位 (Profile)**: `${{ github.event.inputs.profile || 'v1-safe' }}`（v1-safe = 板级使能最小集 7 补丁；func = 含 NPU offload 全栈 100 补丁）
-            - **基座**: OpenWrt main @ `${{ github.event.inputs.openwrt_ref || '63f702f1c' }}`（Linux 6.18.55，mt76 467ae2e3）
+            - **基座**: OpenWrt main @ `${{ needs.build.outputs.pin }}`（Linux ${{ needs.build.outputs.kver }}，mt76 467ae2e3）
             - **架构**: OpenWrt 主线为基座 + 本地补丁集（2026-10-21 转向；aggregate 已移出仓库）
             - **网口映射**: 10G-1=WAN(eth1), 10G-2=LAN(eth2), 1G-1=LAN(lan2), 1G-2=LAN(lan3)
             - **默认 LAN IP**: `192.168.2.1`
