@@ -142,7 +142,12 @@ jobs:
           set -euo pipefail
           export LC_ALL=C LANG=C
           cd "$TREE"
-          JOBS="$(nproc)" make -j"$JOBS" V=s CONFIG_VERSION_DIST="OpenWrt $PROFILE" 2>&1 | tee "$GITHUB_WORKSPACE/build-$PROFILE.log"
+          # ⚠ 坑：勿写 JOBS="$(nproc)" make -j"$JOBS"——赋值前缀只进命令环境，
+          #   同行 $JOBS 展开用的是旧值（未设置）⇒ set -u 下 "unbound variable"。
+          #   （2026-10-22 CI 实测三次失败之一，必须分行写。）
+          JOBS="$(nproc 2>/dev/null || echo 4)"
+          echo "并行度：$JOBS"
+          make -j"$JOBS" V=s CONFIG_VERSION_DIST="OpenWrt $PROFILE" 2>&1 | tee "$GITHUB_WORKSPACE/build-$PROFILE.log"
           if ! ls bin/targets/airoha/an7581/*.itb >/dev/null 2>&1; then
             echo "::error::构建完成但未找到 .itb 产物"; exit 1
           fi
