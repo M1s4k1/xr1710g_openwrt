@@ -25,6 +25,10 @@
 set -euo pipefail
 export LC_ALL=C LANG=C
 
+# patch 实现选择：本地优先 gpatch（GNU，与 CI/ubuntu 同语义——BSD patch 更宽松，
+# 会放行 GNU 拒绝的 hunk，曾致本地"干净"CI 败）；CI 上 patch 本身就是 GNU。
+if command -v gpatch >/dev/null 2>&1; then PATCH_CMD=gpatch; else PATCH_CMD=patch; fi
+
 die() { echo "::error::$*" >&2; exit 2; }
 log() { printf '%s\n' "$*" >&2; }   # 走 stderr：勿污染 $(pkg_workdir) 等命令替换
 
@@ -200,10 +204,10 @@ apply_set() { # <组标签> <工作副本根> <补丁目录（相对树）...>
   log "  [$label] ${#patches[@]} 个补丁"
   local failed=0 p out
   for p in "${patches[@]}"; do
-    out="$(cd "$wd" && patch -p1 --batch --no-backup-if-mismatch < "$p" 2>&1)" || true
-    if printf '%s' "$out" | grep -qE 'FAILED|malformed|No file to patch'; then
+    out="$(cd "$wd" && "$PATCH_CMD" -p1 --batch --no-backup-if-mismatch < "$p" 2>&1)" || true
+    if printf '%s' "$out" | grep -qE 'FAILED|malformed|No file to patch|Reversed|ignored'; then
       echo "  ✗ $(basename "$p")"
-      printf '%s\n' "$out" | grep -E 'FAILED|malformed|No file to patch' | head -3 | sed 's/^/      /'
+      printf '%s\n' "$out" | grep -E 'FAILED|malformed|No file to patch|Reversed|ignored' | head -3 | sed 's/^/      /'
       failed=$((failed+1))
     fi
   done
@@ -264,9 +268,16 @@ verify_kernel() {
   [[ ${#ours[@]} -gt 0 ]] || { log "  无我方内核补丁，跳过"; return 0; }
   log "  我方内核补丁 ${#ours[@]} 个"
 
-  # 目标文件全集（我方补丁的 --- a/ 路径，排除 /dev/null）
+  # 目标文件全集：全部内核补丁（不只我方）——主线补丁的目标文件也须抽取，
+  # 否则 GNU patch 对缺失文件上的 git 格式补丁报 malformed（假阳性，671 类）
   local list="$WORK/kfiles.txt"
-  collect_targets "${ours[@]}" > "$list"
+  local allk=() d2 f2
+  for d2 in target/linux/generic/backport-6.18 target/linux/generic/pending-6.18 \
+            target/linux/generic/hack-6.18 "$(our_kernel_platform_dir)"; do
+    [[ -d "$TREE/$d2" ]] || continue
+    while IFS= read -r f2; do allk+=("$TREE/$d2/$f2"); done < <(cd "$TREE/$d2" && ls ./*.patch 2>/dev/null | xargs -n1 basename)
+  done
+  collect_targets "${allk[@]}" > "$list"
   local prefix="linux-$KVER"   # kernel.org tarball 恒解包到 linux-<ver>/（勿用 tar|head 探测：pipefail+坏包双坑）
   sed "s|^|$prefix/|" "$list" > "$list.prefixed"
   log "  抽取 $(( $(wc -l < "$list") )) 个目标文件"
@@ -288,22 +299,16 @@ verify_kernel() {
     while IFS= read -r f; do
       [[ -n "$f" ]] || continue
       local out
-      out="$(cd "$wd" && patch -p1 --batch --no-backup-if-mismatch < "$pd/$f" 2>&1)" || true
-      if printf '%s' "$out" | grep -qE 'FAILED|malformed'; then
+      out="$(cd "$wd" && "$PATCH_CMD" -p1 --batch --no-backup-if-mismatch < "$pd/$f" 2>&1)" || true
+      # Reversed/ignored 必须判失败：GNU patch --batch 对"已应用"补丁会
+      # "Assuming -R" **反向应用**（静默破坏文件！比 FAILED 危险一万倍）。
+      # 我方补丁目标必被抽取，"No file to patch" 出现即异常。
+      if printf '%s' "$out" | grep -qE 'FAILED|malformed|Reversed|ignored'; then
         local tag="主线"
-        case "$f" in 675-*|961-*|976-*|980-*|9999-*) tag="我方" ;; esac
+        case "$f" in 675-*|961-*|976-*|980-*|992-*|9999-*) tag="我方" ;; esac
         echo "  ✗ [$tag] $f"
-        printf '%s\n' "$out" | grep -E 'FAILED|malformed' | head -3 | sed 's/^/      /'
+        printf '%s\n' "$out" | grep -E 'FAILED|malformed|Reversed|ignored|No file' | head -3 | sed 's/^/      /'
         failed=$((failed+1))
-      elif printf '%s' "$out" | grep -qiE 'ignored|reversed'; then
-        # BSD patch 对"已应用/反向"只提示 ignored；GNU patch（CI）会报 FAILED。
-        # 只对我方补丁警示（主线补丁的 ignored 多为部分抽取下的 BSD 假警报，
-        # 且主线补丁由 openwrt 自身 CI 背书，以我方 ✗ 与 CI 结论为准）。
-        case "$f" in
-          675-*|961-*|976-*|980-*|9999-*)
-            echo "  ⚠ [我方] $f — patch 提示 ignored/reversed（疑似已应用/superseded，CI 的 GNU patch 会直接判失败）"
-            ;;
-        esac
       fi
     done < <(cd "$pd" && ls ./*.patch 2>/dev/null | xargs -n1 basename | sort)
   done
@@ -355,6 +360,33 @@ verify_pkg() { # <包相对目录> <显示名>
   wd="$(pkg_workdir "$pkgdir" "$name")"
   apply_set "$name" "$wd" "$pkgdir/patches" || FAILED_TOTAL=$((FAILED_TOTAL+1))
 }
+
+# ── 前置守卫：TREE 必须已应用本地补丁集 ──────────────────────────────
+# 2026-10-22 事故：openwrt 的 .gitignore 第 16 行是 /files ⇒ git clean 不加 -x
+# 清不掉 files/ 下残留、git status 也不显示；更隐蔽的是「树未应用补丁」时
+# 各组 apply_set 全部"无补丁，跳过"⇒ 输出"全部通过"——**假绿**。
+# 判据（任一命中即认树已应用）：
+#   ① airoha 平台目录存在 9999-*/992-*（我方元补丁创建的内核补丁）
+#   ② package/kernel/mt76/patches/ 存在 98xx（复制型 mt76 补丁）
+# 都不命中 ⇒ die。CI 每次 fresh clone+apply，本地复用时必须先 reset -x。
+_preflight() {
+  local hit=""
+  # 9999-*：仅 9760 元补丁创建（上游 airoha 集只到 9997）
+  if ls "$TREE/target/linux/airoha/patches-6.18/"9999-*.patch >/dev/null 2>&1; then
+    hit="airoha-9999x"
+  fi
+  # 98xx：复制型 mt76 补丁（上游 pin 树的 mt76/patches 为空目录）
+  if ls "$TREE/package/kernel/mt76/patches/"98*.patch >/dev/null 2>&1; then
+    hit="${hit:+$hit,}mt76-98xx"
+  fi
+  # 板级基础件（9402/9403 创建，最不可能被移除）
+  [[ -f "$TREE/target/linux/airoha/dts/an7581-xr1710g-ubi.dts" ]] && hit="${hit:+$hit,}dts"
+  [[ -f "$TREE/package/boot/uboot-airoha/patches/9990-airoha-add-gemtek-xr1710g.patch" ]] && hit="${hit:+$hit,}uboot"
+  [[ -n "$hit" ]] && { log "  前置检查：树内含我方补丁产物（$hit）"; return 0; }
+  die "TREE 未应用本地补丁集（无 9999x/98xx/dts/uboot 产物）——先跑 apply-patches.sh；" \
+      "若为复用树，先 git reset --hard && git clean -fdx（openwrt .gitignore 忽略 /files）"
+}
+_preflight
 
 want kernel    && verify_kernel
 want mac80211  && verify_mac80211

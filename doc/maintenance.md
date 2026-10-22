@@ -80,3 +80,35 @@ fanboy 废弃关闭）。
 已验状态（截至 2026-10-22）：mt76 32/32（对 mt76@467ae2e）、generic 675-01/02/03、
 airoha 957（**superseded 已删**）/960/961/976/980、airoha 9999-30..35、
 mac80211 subsys 10/10（对 backports-v7.2）全部干净。
+
+### 7.1 第二批 superseded 与实际基准修正（2026-10-22 晚）
+
+CI GNU patch（gpatch 2.8）全量验证暴露的失败，逐条在**真源**上裁决后处置：
+
+| 补丁/段 | 处置 | 真源依据 |
+|---|---|---|
+| 9998（airoha_ppe.c flush_sram） | **删**（9746 整文件） | 内核 6.18.55 已把函数重构为 `airoha_npu->ops.ppe_flush_sram_entries` 委派（签名多 `npu` 参数、循环只 memset、错误由 ops 层传播） |
+| mt76 9809/9816/9820 | **删** | mt76 **真基准是 openwrt pin Makefile 的 467ae2e**（非注释里的 be5ce791）：主线已含 `sta &&` EAPOL 守卫、NPU agg-timer 门、删 add_sta(DISCONNECT) |
+| 9999-30/31 的 offload.h hunk | **补回误删的 diff 文件头** | 上一轮删 superseded hunk 时把 `+diff --git a/include/...` 等四行一起删了 ⇒ hunk 沦为 npu.c diff 延续 ⇒ GNU patch 上下文全 FAILED（连锁 9999-32） |
+| 992-20 hunk 8/9（trtcm retry） | **删** | 上游平台补丁 `187-v7.3-Add-retry-mechanism-to-airoha_qdma_set_trtcm_param`（Airoha Leto Liu，ansuelsmth 改进入集）已用 `TRTCM_CONFIG_RETRY_MAX` for 循环 + 回读 + `-EBUSY` 实现同一功能且更强；187 字典序先应用 ⇒ hunk 9 旧侧被破坏，且 hunk 8 加的 value_lo/retry_num 成死代码 |
+
+**方法论沉淀**：
+
+1. **Reversed ≠ superseded**：GNU patch 报 Reversed 只说明"新侧已在文件中"，可能是主线吸收，
+   也可能是顺序链中**前置补丁**先应用了同一改动。判定必须回到**隔离 dry-run**（纯净源 + 单补丁）。
+   本轮 9809/9816/9820 曾被误判——隔离 dry-run 全干净，实为验证树基准用错 commit。
+2. **包版本基准永远以树的 Makefile 为准**（`PKG_SOURCE_VERSION`），注释里记录的 commit 可能过期；
+   本例 mt76 注释写 be5ce791，而 pin 树实际 467ae2e。
+3. **元补丁删段时必须保住 diff 文件头**：`+diff --git`/`+index`/`+---`/`++++` 四行是补丁内容的
+   结构骨架，删 hunk 时连带删除会让后续 hunk"嫁接"到前一个文件的 diff 上。
+4. **删段后三件事**：重算 `@@ -0,0 +1,N` 计数（N = 该段 `+` 行数）；保结尾换行；
+   `git apply --check` 验整个元补丁（计数不精确会报 corrupt patch）。
+
+### 7.2 verify 脚本前置守卫与 /files 陷阱（2026-10-22）
+
+- openwrt 的 `.gitignore` 第 16 行是 `/files` ⇒ **整个 files/ 目录被忽略**：
+  `git clean -fd` 清不掉其中残留，`git status` 也不显示。复用验证树 reset 必须
+  `git reset --hard && git clean -fdx`。
+- 若树未应用本地补丁集，各组 apply_set 全部"无补丁，跳过"⇒ 输出**"全部通过"——假绿**。
+  已在脚本加 `_preflight` 守卫：树内无 9999x/98xx/dts/uboot 任一产物即 `die`。
+  判据不用 `99*` 通配——上游 airoha 平台目录自带 17 个 99x 补丁（998/9990-9997 等）。

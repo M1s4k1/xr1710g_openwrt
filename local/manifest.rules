@@ -55,7 +55,6 @@
 9743-9024-bridge-hw-offload-deps-table.patch    # 理由: bridge hw offload 依赖表（依赖 9721/9722）（补漏：Phase 2b）
 9744-9026-bridge-flow-offload-init-conntrack.patch    # 理由: bridge flow offload 初始 conntrack（补漏：Phase 2b）
 9745-9035-airoha-ppe-flow-stats-coexist.patch    # 理由: airoha PPE flow 统计共存（补漏：Phase 2b）
-9746-9048-xr1710g-airoha-ppe-flush-sram-err.patch    # 理由: airoha PPE SRAM flush 错误处理（补漏：Phase 2b）
 9747-9047-xr1710g-airoha-ppe-bind-rate.patch    # 理由: airoha PPE bind rate（补漏：Phase 2b）
 9748-9036-xr1710g-airoha-npu-dirty-lazy-clean.patch    # 理由: airoha NPU dirty lazy clean（补漏：Phase 2b）
 9749-9038-xr1710g-pcs-usxgmii-stabilize.patch    # 理由: PCS USXGMII 稳定化（补漏：Phase 2b）
@@ -66,7 +65,6 @@
 9754-9045-xr1710g-airoha-rx-recover-irq-thermal.patch    # 理由: airoha RX 恢复 IRQ/thermal（补漏：Phase 2b）
 9755-9029-xr1710g-airoha-pcs-jcpll-tclvar-recal.patch    # 理由: PCS JCPLL/TCLVAR 重校准（补漏：Phase 2b）
 9756-9046-xr1710g-fix-992-20-context.patch    # 理由: 992-20 上下文修复（与 9725 smartrg 配套）（补漏：Phase 2b）
-9757-9050-xr1710g-airoha-mib-stats-lossless.patch    # 理由: airoha MIB 统计无损（补漏：Phase 2b）
 9758-9058-xr1710g-hwrng-scu-clock-order.patch    # 理由: hwrng/TRNG SCU 时钟门顺序（补漏：Phase 2b）
 9759-9059-xr1710g-hwrng-scu-dts.patch    # 理由: hwrng/TRNG DTS（补漏：Phase 2b）
 9760-9061-xr1710g-airoha-npu-mailbox-recovery.patch    # 理由: NPU mailbox 恢复（元补丁：生成 target 9999-30..35）（补漏：Phase 2b）
@@ -103,18 +101,15 @@
 9806-mt76-0009-report-only-terminal-tx-failures.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0009；patch(1) 实测干净）
 9807-mt76-0005-wifi-mt76-mt7996-guard-txfree-overrun.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0005；patch(1) 实测干净）
 9808-mt76-0011-wifi-mt76-npu-fix-rx-descriptor-ownership.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0011；patch(1) 实测干净）
-9809-mt76-0022-wifi-mt76-mt7996-guard-null-sta-on-eapol-tx.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0022；patch(1) 实测干净）
 9810-mt76-0101-wifi-mt76-mt7996-validate-default-eeprom-size.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0101；patch(1) 实测干净）
 9811-mt76-9990-wifi-mt76-mt7996-advertise-eht-to-firmware-rate-control.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-9990；patch(1) 实测干净）
 9812-mt76-9991-wifi-mt76-mt7996-fill-160mhz-bf-fallback-for-eht-320.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-9991；patch(1) 实测干净）
 9813-mt76-9993-wifi-mt76-mt7996-pass-operating-mode-to-rate-control.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-9993；patch(1) 实测干净）
 9814-mt76-0010-set-skb-device-for-npu-rx.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0010；patch(1) 实测干净）
 9815-mt76-0012-wifi-mt76-npu-del-sta.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0012；patch(1) 实测干净）
-9816-mt76-0013-wifi-mt76-mt7996-refresh-tx-agg-timer-under-npu-offload.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0013；patch(1) 实测干净）
 9817-mt76-0153-wifi-mt76-fix-npu-teardown-ordering.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0153；适配版：init.c 两 hunk 重锚+计数修正）
 9818-mt76-0016-wifi-mt76-mt7996-radar-detecting-chanctx.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0016；patch(1) 实测干净）
 9819-mt76-0017-wifi-mt76-mt7996-bypass-hwrro-sub64-ba.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0017；patch(1) 实测干净）
-9820-mt76-0018-wifi-mt76-mt7996-fix-dl-ofdma-after-sta-reconnect.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0018；patch(1) 实测干净）
 9821-mt76-0021-mtk-mt76-mt7996-only-disallow-global-wcid.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0021；patch(1) 实测干净）
 9822-mt76-0023-wifi-mt76-mt7996-add-pcie-aer-error-handling.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0023；patch(1) 实测干净）
 9823-mt76-0145-wifi-mt76-mt7996-scan-dwell-time-hw-cap.patch -> package/kernel/mt76/patches/    # 理由: NPU 栈 Phase 2a（原 mt76-0145；patch(1) 实测干净）

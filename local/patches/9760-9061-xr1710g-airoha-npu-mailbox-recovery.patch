@@ -1,13 +1,18 @@
-# Phase 2b 移植（2026-10-21）：原体 aggregate/patches/root/9061-xr1710g-airoha-npu-mailbox-recovery.patch
-#   验证：顺序链内（25 已移植件为底 + ORDER 序）对 openwrt main@63f702f1c git apply 干净
-# Reason: NPU mailbox 恢复（元补丁：生成 target 9999-30..35）
-# 档位：func（v1-safe 不含）
+# Phase 2b 适配版 v2（2026-10-22，CI GNU patch 实测 + 本地 gpatch 复现）：
+#   9999-30：删 hunk 6/7（INIT_WORK 提前/删除）——主线 6.18.55 的 npu.c 已用
+#     devm_work_autocancel 初始化+自动取消 wdt_work（aggregate 时代的手动
+#     INIT_WORK 模式整个 superseded）；
+#   9999-31：删 hunk 4/5（devm_add_action_or_reset + 删 airoha_npu_remove）——
+#     同上被 devm_work_autocancel superseded（devm 逆序释放：先释放 IRQ 再取消
+#     work，正是该补丁想修的顺序问题）；
+#   保留：恢复机制主体（recover/restart_core/wdt_work rework/offload.h 导出）。
+
 diff --git a/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch b/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch
 new file mode 100644
 index 0000000..2362f07
 --- /dev/null
 +++ b/target/linux/airoha/patches-6.18/9999-30-net-airoha-npu-recover-stalled-cores.patch
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,170 @@
 +# Source: YYH2913/openwrt@xr1710g-6.18-integration target/linux/airoha/patches-6.18/923-net-airoha-npu-recover-stalled-cores.patch
 +#   （Yanghan Ye, 2026-08-06, d6b07d31）—— 2026-09-12 P3-A 吸收，#EXP
 +# Upstream: n/a（作者自持，未见 PR）
@@ -136,23 +141,6 @@ index 0000000..2362f07
 + 	npu->ops.ppe_init = airoha_npu_ppe_init;
 + 	npu->ops.ppe_deinit = airoha_npu_ppe_deinit;
 + 	npu->ops.ppe_init_stats = airoha_npu_ppe_stats_setup;
-+@@ -770,6 +828,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
-+ 
-+ 		spin_lock_init(&core->lock);
-+ 		core->npu = npu;
-++		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
-+ 
-+ 		irq = platform_get_irq(pdev, i + 1);
-+ 		if (irq < 0)
-+@@ -779,8 +838,6 @@ static int airoha_npu_probe(struct platform_device *pdev)
-+ 				       IRQF_SHARED, "airoha-npu-wdt", core);
-+ 		if (err)
-+ 			return err;
-+-
-+-		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
-+ 	}
-+ 
-+ 	/* wlan IRQ lines */
 +diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
 +index 16a988a..58fa2c7 100644
 +--- a/include/linux/soc/airoha/airoha_offload.h
@@ -200,7 +188,7 @@ new file mode 100644
 index 0000000..a224de1
 --- /dev/null
 +++ b/target/linux/airoha/patches-6.18/9999-31-net-airoha-npu-fix-watchdog-work-lifetime.patch
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,87 @@
 +# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/924-net-airoha-npu-fix-watchdog-work-lifetime.patch
 +#   （Yanghan Ye, 2026-08-07, 6668b939）—— 2026-09-12 P3-A 吸收，#EXP
 +# Upstream: n/a（作者自持）
@@ -256,36 +244,6 @@ index 0000000..a224de1
 + static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
 + {
 + 	struct airoha_npu_core *core = core_instance;
-+@@ -829,6 +849,10 @@ static int airoha_npu_probe(struct platform_device *pdev)
-+ 		spin_lock_init(&core->lock);
-+ 		core->npu = npu;
-+ 		INIT_WORK(&core->wdt_work, airoha_npu_wdt_work);
-++		err = devm_add_action_or_reset(dev, airoha_npu_cancel_wdt_work,
-++					       core);
-++		if (err)
-++			return err;
-+ 
-+ 		irq = platform_get_irq(pdev, i + 1);
-+ 		if (irq < 0)
-+@@ -893,18 +917,8 @@ static int airoha_npu_probe(struct platform_device *pdev)
-+ 	return 0;
-+ }
-+ 
-+-static void airoha_npu_remove(struct platform_device *pdev)
-+-{
-+-	struct airoha_npu *npu = platform_get_drvdata(pdev);
-+-	int i;
-+-
-+-	for (i = 0; i < ARRAY_SIZE(npu->cores); i++)
-+-		cancel_work_sync(&npu->cores[i].wdt_work);
-+-}
-+-
-+ static struct platform_driver airoha_npu_driver = {
-+ 	.probe = airoha_npu_probe,
-+-	.remove = airoha_npu_remove,
-+ 	.driver = {
-+ 		.name = "airoha-npu",
-+ 		.of_match_table = of_airoha_npu_match,
 +diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
 +index 58fa2c7..ab2aee1 100644
 +--- a/include/linux/soc/airoha/airoha_offload.h
