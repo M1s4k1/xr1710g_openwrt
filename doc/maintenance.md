@@ -62,3 +62,21 @@ fanboy 废弃关闭）。
   manifest 的理由行保留（指向历史路径，同 "FIXES Fxxx" 悬空标记的性质）
 - **裁决账本**：`upstream-decisions.md`（aggregate 时代）与
   `doc/patch-review.md`（转向后）均保留
+
+## 7. 补丁的内核源码级验证（2026-10-22 建立）
+
+复制型补丁的验证分两层：**树侧可拷贝**（apply-patches.sh --dry-run）与
+**内核源码级可应用**（构建期 `patch -p1` 的真实战场）。后者曾长期空白，
+2026-10-22 CI func 二连败暴露后补齐，方法：
+
+1. 从 CI 日志拿源码 URL（kernel: `cdn.kernel.org/pub/linux/kernel/v6.x/linux-<ver>.tar.xz`；
+   mac80211: openwrt/backports release 资产 `backports-<ver>.tar.zst`；mt76: pin 的 PKG_SOURCE_VERSION）；
+2. 抽取补丁目标文件（+ 头文件）；
+3. **按序应用主线自身补丁**（同目录、编号小于我们的），得到真实上下文状态
+   （注意：目录里若混有我们自己创建的补丁文件，必须排除，否则模拟被污染——
+   曾因此误判 9061 的 9999-3x "失败"）；
+4. 逐个应用我们的补丁；失败则用「hunk 计数校验器 + 最长前缀匹配分歧行」定位并重锚。
+
+已验状态（截至 2026-10-22）：mt76 32/32（对 mt76@467ae2e）、generic 675-01/02/03、
+airoha 957（**superseded 已删**）/960/961/976/980、airoha 9999-30..35、
+mac80211 subsys 10/10（对 backports-v7.2）全部干净。
