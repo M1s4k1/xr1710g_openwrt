@@ -1,0 +1,84 @@
+name: verify
+
+# XR1710G 补丁源码级快车道验证（不编译，分钟级）
+#
+# 动机：复制型补丁分两层——① 树侧可拷贝（apply-patches --dry-run，秒级）；
+#   ② 内核/包源码级可应用（构建期 patch -p1 的真实战场）。历史上只有①，
+#   补丁漂移要等 build.yml 编译 40+ 分钟才暴露。本 workflow 把②自动化：
+#   下载/缓存上游源码（kernel tarball / backports release / 各 git 包），
+#   按 openwrt 真实应用顺序干跑全部补丁，失败即报。
+#
+# 触发：push 到 dev 自动跑 + 手动。预期：冷缓存 ~5-8 分钟，热缓存 ~2 分钟。
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TREE: ${{ github.workspace }}/openwrt
+      MINE: ${{ github.workspace }}/mine
+      SRC_CACHE: ${{ github.workspace }}/.srccache
+    steps:
+      - name: 取出本仓库（叠加层）
+        uses: actions/checkout@v4
+        with:
+          path: mine
+
+      - name: 读取版本锁定（source-lock.env）
+        id: lock
+        run: |
+          set -euo pipefail
+          PIN="$(grep -E '^OPENWRT_REF=' "$MINE/config/source-lock.env" | head -1 | cut -d= -f2-)"
+          KVER="$(grep -E '^LINUX_VERSION=' "$MINE/config/source-lock.env" | head -1 | cut -d= -f2-)"
+          [[ -n "$PIN" && -n "$KVER" ]] || { echo "::error::source-lock.env 解析失败"; exit 1; }
+          echo "pin=$PIN" >> "$GITHUB_OUTPUT"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+
+      - name: 恢复上游源码缓存（kernel/backports/git 包）
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SRC_CACHE }}
+          key: srcverify-${{ steps.lock.outputs.kver }}-${{ steps.lock.outputs.pin }}
+          restore-keys: |
+            srcverify-${{ steps.lock.outputs.kver }}-
+            srcverify-
+
+      - name: 克隆 OpenWrt 源码树（pin ref）
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/openwrt/openwrt.git "$TREE"
+          cd "$TREE"
+          git checkout -q "${{ steps.lock.outputs.pin }}"
+          echo "OpenWrt commit: $(git rev-parse --short HEAD)"
+          KVER="${{ steps.lock.outputs.kver }}"
+          if grep -q "LINUX_VERSION-6\.18.*=.*\.${KVER#6.18.}" target/linux/generic/kernel-6.18 2>/dev/null; then
+            echo "✓ 内核版本验证通过：Linux $KVER"
+          else
+            echo "::error::当前 OpenWrt 树内核版本非 $KVER！请检查 pin！"
+            exit 1
+          fi
+
+      - name: 安装依赖（zstd 等）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd git patch xz-utils curl
+
+      - name: 应用本地补丁集（func 档）
+        run: |
+          set -euo pipefail
+          export LC_ALL=C LANG=C
+          bash "$MINE/scripts/apply-patches.sh" --tree "$TREE" --tier func
+
+      - name: 源码级补丁验证（verify-source-patches.sh）
+        run: |
+          set -euo pipefail
+          export LC_ALL=C LANG=C
+          bash "$MINE/scripts/verify-source-patches.sh" --tree "$TREE" --cache "$SRC_CACHE"

@@ -129,23 +129,6 @@ new file mode 100644
 + #define RX_IRQ3_BANK_PIN_MASK			0x40
 + #define RX_IRQ_BANK_PIN_MASK(_n)		\
 +
-diff --git a/target/linux/airoha/patches-6.18/960-thermal-airoha-Fix-FIELD_PREP-using-wrong-mask-for-sensor-interval.patch b/target/linux/airoha/patches-6.18/960-thermal-airoha-Fix-FIELD_PREP-using-wrong-mask-for-sensor-interval.patch
-new file mode 100644
---- /dev/null
-+++ b/target/linux/airoha/patches-6.18/960-thermal-airoha-Fix-FIELD_PREP-using-wrong-mask-for-sensor-interval.patch
-@@ -0,0 +1,12 @@
-+--- a/drivers/thermal/airoha_thermal.c
-++++ b/drivers/thermal/airoha_thermal.c
-+@@ -503,7 +503,7 @@
-+ 	 */
-+ 	regmap_write(priv->map, EN7581_TEMPMONCTL2,
-+ 		     FIELD_PREP(EN7581_FILT_INTERVAL, 1) |
-+-		     FIELD_PREP(EN7581_FILT_INTERVAL, 379));
-++		     FIELD_PREP(EN7581_SEN_INTERVAL, 379));
-+ 
-+ 	/* AHB poll is set to 146 * 68.64 = 10.02us */
-+ 	regmap_write(priv->map, EN7581_TEMPAHBPOLL,
-+
 diff --git a/target/linux/airoha/patches-6.18/961-thermal-airoha-Fix-low-trip-clamp-using-wrong-variable.patch b/target/linux/airoha/patches-6.18/961-thermal-airoha-Fix-low-trip-clamp-using-wrong-variable.patch
 new file mode 100644
 --- /dev/null
