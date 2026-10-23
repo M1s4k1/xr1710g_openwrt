@@ -1,0 +1,91 @@
+# Source: naoki66/ImmortalWrt-for-Gemtek-XR1710G 09feeff (622, RTL826x SDS mode, Linux 6.18.44 fix)
+# Upstream: n/a (community fork of openwrt master; property realtek,sds-mode is XR1710G board-specific)
+# Reason: XR1710G LAN2 (phy5) host-SerDes needs SDS page6 reg3=0x88c6 which vendor U-Boot
+#   programs but the common Linux RTL826x init leaves unset. Opt-in via realtek,sds-mode,
+#   applied in config_init after the firmware patch table (which resets the SerDes block).
+#   Rebuilt against openwrt main 6.18 (74eb10e): rtl826x_phy_patch_sds_set is already
+#   non-static and declared in phy_patch_rtl826x.h, so the naoki66 header/export hunks are
+#   dropped (they would be duplicates); hunks regenerated with consistent counts.
+
+From: naoki66 <naoki66@qq.com>
+Subject: [PATCH] net: phy: realtek: allow board-specific RTL826x SDS mode
+
+The RTL826x firmware tables are shared by several PHY variants and boards,
+so board-specific host-side SerDes setup does not belong in those tables.
+
+Allow a board to provide the value for the RTL826x host-side SDS mode
+register through the optional realtek,sds-mode property. Apply it after
+the common firmware table, since the table loader resets and initializes
+the SerDes block.
+
+This is needed on the Gemtek XR1710G LAN2 path. Its vendor U-Boot writes
+SDS page 6 register 3 to 0x88c6, while the common Linux initialization
+sequence currently leaves that board setting out.
+
+Signed-off-by: naoki66 <naoki66@qq.com>
+
+---
+diff --git a/drivers/net/phy/realtek/realtek_main.c b/drivers/net/phy/realtek/realtek_main.c
+index 3ae887d..5e332c7 100644
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -245,6 +245,9 @@
+ #define RTL826X_VEND1_VERSION_ID		0x104
+ #define   RTL826X_VEND1_VERSION_ID_VARIANT	GENMASK(2, 0)
+ 
++#define RTL826X_SDS_HOST_MODE_PAGE		6
++#define RTL826X_SDS_HOST_MODE_REG		3
++
+ #define RTL826X_VND2_INER			0xA424
+ #define   RTL826X_VND2_INER_LINK_STATUS		BIT(4)
+ #define   RTL826X_VND2_INER_PME			BIT(7)
+@@ -2635,6 +2638,38 @@ static int rtl826x_probe(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++static int rtl826x_config_sds_mode(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++	u32 mode;
++	int ret;
++
++	if (!device_property_present(dev, "realtek,sds-mode"))
++		return 0;
++
++	ret = device_property_read_u32(dev, "realtek,sds-mode", &mode);
++	if (ret) {
++		phydev_err(phydev, "failed to read SDS mode: %d\n", ret);
++		return ret;
++	}
++
++	if (mode > 0xffff) {
++		phydev_err(phydev, "invalid SDS mode 0x%x\n", mode);
++		return -EINVAL;
++	}
++
++	ret = rtl826x_phy_patch_sds_set(phydev, RTL826X_SDS_HOST_MODE_PAGE,
++					RTL826X_SDS_HOST_MODE_REG, mode);
++	if (ret) {
++		phydev_err(phydev, "failed to set SDS mode 0x%04x: %d\n", mode, ret);
++		return ret;
++	}
++
++	phydev_info(phydev, "configured SDS mode 0x%04x\n", mode);
++
++	return 0;
++}
++
+ static int rtl826x_config_serdes_polarity(struct phy_device *phydev)
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+@@ -2711,6 +2746,10 @@ static int rtl826x_config_init(struct phy_device *phydev)
+ 		return ret;
+ 	}
+ 
++	ret = rtl826x_config_sds_mode(phydev);
++	if (ret)
++		return ret;
++
+ 	return rtl826x_config_serdes_polarity(phydev);
+ }
+ 

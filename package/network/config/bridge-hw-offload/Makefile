@@ -12,7 +12,7 @@ define Package/bridge-hw-offload
   CATEGORY:=Network
   SUBMENU:=Firewall
   TITLE:=Bridge hardware flow offloading
-  DEPENDS:=+kmod-nft-bridge +firewall4
+  DEPENDS:=+kmod-nft-offload +firewall4
 endef
 
 define Package/bridge-hw-offload/description

@@ -1,0 +1,21 @@
+# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/927-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ.patch
+#   （Yanghan Ye, 2026-08-07, 2b1f16ab）—— 2026-09-12 P3-A 吸收，#EXP
+# Upstream: n/a（作者自持）
+# Reason: REG_IRQ_STATUS 同时含两个 WLAN RX ring 的 pending 位；mt76 handler 把
+#   wlan_get_irq_status() 的返回值写回此 write-one-to-clear 寄存器 → **一个 ring 的 handler
+#   会清掉另一个 ring 的 pending 位**（丢中断）。按 Airoha SDK 只返回请求位（& NPU_IRQ_RX_MASK(q)）。
+#   与 mt76 0153 的 IRQ teardown 直接配套。
+# 实证：fuzz=0（1 行）。
+diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
+index 78472b4..8588f37 100644
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -686,7 +686,7 @@ static u32 airoha_npu_wlan_irq_status_get(struct airoha_npu *npu, int q)
+ 	u32 val;
+ 
+ 	regmap_read(npu->regmap, REG_IRQ_STATUS, &val);
+-	return val;
++	return val & NPU_IRQ_RX_MASK(q);
+ }
+ 
+ static void airoha_npu_wlan_irq_enable(struct airoha_npu *npu, int q)

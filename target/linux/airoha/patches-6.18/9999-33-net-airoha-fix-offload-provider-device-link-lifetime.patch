@@ -1,0 +1,34 @@
+# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/926-net-airoha-fix-offload-provider-device-link-lifetime.patch
+#   （Yanghan Ye, 2026-08-07, dca2a8c9）—— 2026-09-12 P3-A 吸收，#EXP
+# Upstream: n/a（作者自持）
+# Reason: airoha_npu_get()/airoha_ppe_get_dev() 在 consumer probe 期建 device link，用
+#   DL_FLAG_AUTOREMOVE_SUPPLIER 会在 Wi-Fi consumer unbind 后**留下 link**，违反 device-link
+#   契约；后续 reload 会继承陈旧 consumer 状态。改 DL_FLAG_AUTOREMOVE_CONSUMER。
+#   与 mt76 侧 0154（DMA 内存挂 consumer）为同一“consumer 生命周期”主题的不同侧面。
+# 实证：对 6.18.44 真源 + 本仓 PPE 系列内层（9990/9995/9996/9997/9998）按序 fuzz=0。
+diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
+index 7c7979c..78472b4 100644
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -730,7 +730,7 @@ struct airoha_npu *airoha_npu_get(struct device *dev)
+ 		goto error_module_put;
+ 	}
+ 
+-	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_SUPPLIER)) {
++	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+ 		dev_err(&pdev->dev,
+ 			"failed to create device link to consumer %s\n",
+ 			dev_name(dev));
+diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
+index 6ea91ff..c9ddadb 100644
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -1574,7 +1574,7 @@ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
+ 	if (!eth)
+ 		goto error_module_put;
+ 
+-	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_SUPPLIER)) {
++	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+ 		dev_err(&pdev->dev,
+ 			"failed to create device link to consumer %s\n",
+ 			dev_name(dev));
