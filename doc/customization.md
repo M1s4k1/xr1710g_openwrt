@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **10 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **11 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -157,7 +157,22 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
 
-### 10. `c953b64f7f` doc: add customization.md (custom file inventory + commit history)
+### 11. docs: func-only tier decision（2026-10-23，docs commit）
+
+> 注：最新一条 commit 的 SHA 存在“文档记录自身”的自引用循环，故本条不写 SHA，
+> 以“主题 + 日期”标识；历史条目的 SHA 均为定稿值，可用 `git log` 核对。
+
+- **改动**（3 文件）：修改 `xr1710g.md`（档位声明）、`doc/README.md`（文档代际说明）；
+  本文档追加本条记录；顺带修正 #10 的 SHA 为 amend 后的定稿值 `f38b64e6f9`
+- **做了什么**：确立“fork 只保留 func 档”的决策，防止以后反复讨论 v1-safe
+- **修复**：迁移文档（build/rules/audit/handoff）仍以叠加层时代口吻描述
+  `manifest.rules` / `apply-patches.sh` / `profile=v1-safe` 等已不存在的机制——
+  在 doc/README.md 顶部加代际说明，指清 fork 模式权威文档
+- **背景**：用户确认“只要 func 档，符合需求”。v1-safe 的 7 个补丁本就是 func 95 的
+  子集（板级最小集），func 镜像 + initramfs-recovery 兜底已覆盖首刷安全需求；
+  fork 不设档位开关，`new_main` 即 func 全量
+
+### 10. `f38b64e6f9` doc: add customization.md (custom file inventory + commit history)
 
 - **改动**（2 文件）：新增 `doc/customization.md`；修改 `doc/README.md`（索引加一行）
 - **做了什么**：建立"定制清单 + 提交史"文档，并把"每次 commit 必须同步更新本文档"

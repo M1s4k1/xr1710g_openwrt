@@ -3,6 +3,13 @@
 本目录集中存放仓库的**全部说明 / 介绍类文档**。仓库根 `README.md` 已精简为项目说明，
 详细内容在此处按主题拆分，便于长期维护。
 
+> ⚠️ **文档代际说明（2026-10-23）**：`build.md` / `rules.md` / `audit.md` / `handoff.md` /
+> `config-ownership.md` 迁移自叠加层时代（旧仓库 dev 分支），其中提到的
+> `local/patches/`、`manifest.rules`、`apply-patches.sh`、`build-mine.sh`、
+> `profile=v1-safe` 等机制**在 fork 中已不存在**，阅读时以历史视角看待。
+> fork 模式的权威说明：仓库根 `xr1710g.md`、`doc/customization.md`（定制清单+提交史）、
+> `doc/maintenance.md` §7（上游适配方法论）。
+
 ## 运营文档（构建与维护）
 
 | 文档 | 内容 |
