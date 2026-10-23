@@ -1,0 +1,127 @@
+name: build
+
+# XR1710G OpenWrt fork 构建（2026-10-23 架构转向：fork 模式）
+#
+# 与旧叠加层 CI 的区别：仓库本身就是 openwrt fork，无需 clone pin +
+# apply-patches，直接 feeds → defconfig → seed → 符号门禁 → make。
+#
+# 触发方式：仅手动（workflow_dispatch）——Actions 页选分支 → Run workflow。
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '构建成功后是否自动创建 GitHub Release'
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: 清理磁盘空间（释放 ~35GB 冗余预装套件）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: 取出本仓库（fork）
+        uses: actions/checkout@v4
+        with:
+          path: openwrt
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd git patch xz-utils curl
+
+      - name: 恢复 dl 源码缓存（内核包 + 各包源码，省重复下载）
+        id: dl-cache
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: xr1710g-dl-${{ hashFiles('xr1710g-seed.config', 'feeds.conf') }}
+          restore-keys: |
+            xr1710g-dl-
+
+      - name: ccache 缓存配置
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          prefix: xr1710g-ccache
+          key: xr1710g-ccache-${{ github.ref_name }}
+          maxsize: 8G
+          restore-keys: |
+            xr1710g-ccache-
+
+      - name: 配置构建（feeds + defconfig + seed + 符号门禁）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+          # 保证前一段以换行结尾，避免两段 seed 粘连
+          [[ -n "$(tail -c1 .config 2>/dev/null)" ]] && printf '\n' >> .config
+          cat xr1710g-seed.config >> .config
+          make defconfig
+          # 符号门禁①：目标设备必须选中（kconfig 静默忽略未知符号）
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y$' .config \
+            || { echo "::error::.config 未选中 gemtek_xr1710g-ubi"; exit 1; }
+          # 符号门禁②：内核版本锚点（与迁移基线一致；上游 rebase 后需重新评估）
+          grep -q '^CONFIG_LINUX_6_18=y$' .config \
+            || { echo "::warning::内核大版本非 6.18——内核补丁基线可能需重锚"; }
+          echo "配置就绪"
+
+      - name: 执行固件构建 (make)
+        run: |
+          set -euo pipefail
+          cd openwrt
+          echo "::group::make 开始 $(date -u +%FT%TZ)"
+          make -j"$(( $(nproc) + 1 ))" || { echo "::error::make 失败"; exit 1; }
+          echo "::endgroup::"
+
+      - name: 收集产物清单
+        if: always()
+        run: |
+          cd openwrt
+          {
+            echo "# 产物清单 $(date -u +%FT%TZ)"
+            ls -lh bin/targets/airoha/an7581/ 2>/dev/null || echo "（无产物）"
+            echo
+            echo "# 内核版本"
+            grep -E '^CONFIG_LINUX_' include/target.mk 2>/dev/null || true
+            make val.LINUX_VERSION V=cs 2>/dev/null || true
+          } > "$GITHUB_WORKSPACE/artifacts-manifest.txt" || true
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-func
+          path: |
+            openwrt/logs/**
+            artifacts-manifest.txt
+          if-no-files-found: warn
+
+      - name: 上传固件产物
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-func
+          path: |
+            openwrt/bin/targets/airoha/an7581/*.itb
+          if-no-files-found: error
+
+      - name: 创建 Release
+        if: success() && inputs.create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: func-${{ github.run_number }}
+          name: XR1710G func build #${{ github.run_number }}
+          files: openwrt/bin/targets/airoha/an7581/*.itb
+          body: |
+            自动构建产物（func 档，含 NPU offload 全栈）。
+            刷机前请核对构建日志中的内核版本与补丁应用清单。
