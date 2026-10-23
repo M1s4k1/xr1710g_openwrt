@@ -32,7 +32,9 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 │   │   ├── an7581-xr1710g-ubi.dts            [A] XR1710G 设备树入口（含 mainline an7581.dtsi）
 │   │   │                                           解决：上游只有 an7581 通用 DTSI，无整机 DTS
 │   │   └── an7581.dtsi                       [M] NPU 内存保留区、hwrng 时钟顺序
-│   └── patches-6.18/                          内核补丁 21 个（详见下方清单）
+│   └── patches-6.18/                          内核补丁 24 个（详见下方清单）
+│                                                   注：9756-9046-fix-992-20-context 的效果已
+│                                                   烘焙进 992-20（无独立文件，见 §2 #5）
 │
 ├── target/linux/generic/                       通用内核层
 │   ├── pending-6.18/675-01..04                [A] 桥接硬件卸载四件套：
@@ -122,7 +124,11 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 └── .gitignore                                 [M] 放开 /files、/feeds.conf；忽略 .idea/
 ```
 
-### 内核补丁清单（target/linux/airoha/patches-6.18/，21 个）
+### 内核补丁清单（target/linux/airoha/patches-6.18/，24 个）
+
+> 命名注意：`generic/hack-6.18/743-net-phy-realtek-add-rtl826x-led-support`（LED）与
+> `airoha/patches-6.18/743-net-phy-realtek-restore-optional-RTK-SerDes`（SerDes）**同号不同目录**，
+> 两目录独立应用，功能无碍；rebase/查阅时勿混淆。
 
 | 补丁 | 作用 |
 |---|---|
@@ -147,8 +153,17 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 | `9999-34-net-airoha-npu-acknowledge-only-the-requested-WLAN-RX-IRQ` | WLAN RX IRQ 精确应答 |
 | `9999-35-net-airoha-npu-publish-mailbox-command-before-doorbell` | mailbox 命令先发布后敲铃 |
 
-（另有 `998-net-phy-mediatek-make-LED-pinctrl-optional`、`939-cpufreq-airoha-EN7581-CPUFreq-SMCCC`、
-`940-pmdomain-airoha-CPU-PM-Domain` 见 §2 对应 commit。）
+（同目录另有 4 个补丁见 §2 对应 commit：`998-net-phy-mediatek-make-LED-pinctrl-optional`、
+`9991-net-airoha-no-carrier-rx-stats`（注释仅写 "see docs/FIXES.md"——该文件不存在，
+文档债待补）、`939-cpufreq-airoha-EN7581-CPUFreq-SMCCC`、`940-pmdomain-airoha-CPU-PM-Domain`。）
+
+### 未启用决策记录：luci-app-wifi7
+
+`package/luci-app-wifi7/`（woziwrt 的 LuCI WiFi7 模块，随 9735 移植进树）**seed 不选**：
+其 README 自述"专为 MTK SDK WiFi 栈设计，在 mainline OpenWrt 上不会工作"
+（接口命名/MLD 配置/hostapd 参数均不同）——本 fork 是 mainline 基座。且与已启用的
+`luci-app-mlo` 功能重叠（都管 MLD/MLO），场景互斥。保持不选；若将来弃 mlo 改 MTK
+SDK 栈再评估。
 
 ---
 
@@ -247,9 +262,11 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 
 ### 5. `5b4b89dd05` target: airoha - NPU/PPE hardware offload stack
 
-- **改动**（74 文件）：内核补丁 21 个（`target/linux/airoha/patches-6.18/`）、
+- **改动**（74 文件）：`patches-6.18/` 新增 19 个内核补丁 + 9756-9046 的效果烘焙进
+  992-20（992-20 由 #4 创建，本 commit 修改——故树里无独立 9756 文件）、
   `target/linux/generic/pending-6.18/675-04`、`arch/arm64/boot/dts/airoha/en7581.dtsi`、
-  `drivers/char/hw_random/airoha-trng.c`、LuCI 应用 6 个（npu/flowsense/fancontrol/mlo 等）、
+  `drivers/char/hw_random/airoha-trng.c`、LuCI 应用 5 个（airoha-npu / airoha-flowsense /
+  mlo / w1700k-fancontrol / wifi7——其中 wifi7 seed 未选，见 §1"未启用决策记录"）、
   `package/network/config/bridge-hw-offload` 规则、`config-6.18`
 - **做了什么**：NPU/PPE 硬件卸载栈主体 + 配套 LuCI 监控应用 + 板级包
 - **修复**：992-20 与上游 187-v7.3 重复的 trtcm 重试（hunk 8/9 删除）；
@@ -259,9 +276,9 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 
 ### 4. `6a167d42fd` target: airoha - platform fix bundle for an7581
 
-- **改动**（16 文件）：`patches-6.18/`×7（939 cpufreq/940 pmdomain/998 phy-LED/9991/
-  992-20/992-21）、`pending-6.18/675-01..03`、hostapd mtk-0015、wifi-scripts 010、
-  bridge-hw-offload 包、`an7581/config-6.18`、`an7581/target.mk`、`an7581.dtsi`
+- **改动**（16 文件）：`patches-6.18/`×4（939 cpufreq/940 pmdomain/992-20/992-21；
+  998 phy-LED 与 9991 属 #3，勿重复计数）、`pending-6.18/675-01..03`、hostapd mtk-0015、
+  wifi-scripts 010、bridge-hw-offload 包、`an7581/config-6.18`、`an7581/target.mk`、`an7581.dtsi`
 - **做了什么**：平台级修复与桥接卸载前置
 - **修复**：EN7581 CPUFreq（SMCCC）与 PM domain 缺失；6G 免 DFS；EHT beamforming 默认关闭
 - **新增**：nft L2 bridge offload 三件套（675-01/02/03）、桥接硬件卸载规则包、
@@ -309,3 +326,22 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 已知长期趋势：上游逐步合入 Airoha AN7581 支持后，本清单中板级注册（§2 #1）、
 DTS（#1）、部分 NPU 补丁（#5）会被上游原生实现取代——届时在 rebase 中 drop 对应
 commit 并同步缩减本文档，即为"修改量逐渐降低"的可量化体现。
+
+---
+
+## §4 挂起事项（2026-10-23 review 决议：固件稳定后再处理）
+
+| 事项 | 状态 | 说明 |
+|---|---|---|
+| `check-upstream.sh` + `config/upstream-sources.yml`（上游巡检） | **挂起** | 随叠加层退役未迁移；期间上游跟踪靠手动 `scripts/fetch-upstream.sh`。固件稳定后恢复巡检机制（用户原始需求第 3 条"吸取其他上游更新"的落地件） |
+| fork 版 `audit-local.sh`（自检：rules 语法/端口命名/个人配置扫描） | **挂起** | 同上；恢复前 CI 无自检门禁 |
+| CI post-build 内容验证（解包 rootfs → 核对 seed 54 符号 → 默认配置 → 个人配置扫描） | **挂起** | 本次"包缺失"事故的直接对策；恢复自检时一并建设 |
+| CI buildlog 为空（成功构建不写 `logs/`，需 `make \| tee`） | **挂起** | 同批恢复 |
+| ccache-action 参数非法（`prefix`/`maxsize`） | **挂起** | 只影响速度不影响产物 |
+| 产物上传不全（sha256sums/profiles.json/.manifest/config.buildinfo） | **挂起** | 同批恢复 |
+| `owut` 包 | **挂起** | ImmortalWrt 系包，官方 feed 无源码；需要时从 aggregate 提取移植 |
+| `luci-app-airoha-recovery` | **挂起** | 源码在 aggregate fanboy 19-pack，未跟来；seed 内已注明提取路径 |
+| `luci-app-netspeedtest` | **不启用** | 19-pack 有、aggregate seed 也未选；与 ttyd 场景重叠，无移植计划 |
+| `9991` 补丁注释引用不存在的 `docs/FIXES.md` | 待补文档 | 补丁内容有效（RX stats 修复），仅注释债 |
+| GitHub 默认分支仍为 `main`（9 月旧 aggregate） | 待用户决策 | 建议改为 `new_main`；用户未定前不动 |
+| WAN TX 死锁（carrier 恢复后 TX 单向死，仅重启可恢复） | 修复中 | 诊断计划已定（换 new_main 固件后 `ethtool -S` 二分断点 → mdio/devmem 定位）；补丁编号预分配 9999-36 |
