@@ -8,6 +8,7 @@
 | 文档 | 内容 |
 |------|------|
 | [build.md](build.md) | 快速开始、构建流水线、GitHub Actions、已定位的环境坑、版本锁定 |
+| [customization.md](customization.md) | **定制清单与提交史**：全部定制文件的树形说明 + 每个 commit 的记录（每次 commit 必须同步更新） |
 | [rules.md](rules.md) | `local/manifest.rules*` 语法与收录清单（应用型 / 复制型条目） |
 | [audit.md](audit.md) | `audit-local.sh` 自检：[A]-[H]（清单语法、端口命名一致性、无个人配置残留等） |
 | [config-ownership.md](config-ownership.md) | 配置归属铁律：A/B 类进固件，C 类（SSID/密码/自定义 MAC）不进 |
