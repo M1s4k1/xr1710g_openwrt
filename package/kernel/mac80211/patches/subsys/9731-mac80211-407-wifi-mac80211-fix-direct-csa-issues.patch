@@ -1,0 +1,53 @@
+# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/packages/mac80211-407-wifi-mac80211-fix-direct-csa-issues.patch
+#   （旧 func 集提档件，triage 时整组遗漏；主线 subsys 无等价修复已核实）
+# Reason: direct CSA 问题修复
+# 档位：func（v1-safe 不含）
+diff --git a/net/mac80211/cfg.c b/net/mac80211/cfg.c
+index f733e379..88f9da95 100644
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -4535,8 +4535,39 @@ __ieee80211_channel_switch(struct wiphy *wiphy, struct net_device *dev,
+ 		ieee80211_link_info_change_notify(sdata, link_data, changed);
+ 		drv_channel_switch_beacon(sdata, &link_data->csa.chanreq.oper);
+ 	} else {
+-		/* if the beacon didn't change, we can finalize immediately */
+-		ieee80211_csa_finalize(link_data);
++		struct ieee80211_link_data *link;
++		int n_assigned = 0, n_reserved = 0;
++		unsigned int link_id;
++
++		/* if the beacon didn't change, we can finalize after
++		 * all assigned links are ready.
++		 */
++		for_each_sdata_link(local, link) {
++			if (rcu_access_pointer(link->conf->chanctx_conf) == &chanctx->conf)
++				n_assigned++;
++			if (link->reserved_chanctx == chanctx)
++				n_reserved++;
++		}
++
++		/* Wait for all interfaces to be ready */
++		if (n_assigned != n_reserved) {
++			link_data->reserved_ready = true;
++			err = 0;
++			goto out;
++		}
++
++		for_each_sdata_link(local, link) {
++			struct ieee80211_link_data *tmp;
++
++			for_each_valid_link(&link->sdata->wdev, link_id) {
++				tmp = sdata_dereference(link->sdata->link[link_id],
++							link->sdata);
++				if (!tmp)
++					continue;
++				wiphy_work_queue(link->sdata->local->hw.wiphy,
++						 &tmp->csa.finalize_work);
++			}
++		}
+ 	}
+ 
+ out:
+-- 
+2.45.2
+

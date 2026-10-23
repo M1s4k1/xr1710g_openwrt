@@ -1,0 +1,21 @@
+# 补漏移植（2026-10-21 整体 review 发现）：原体 aggregate/patches/packages/mac80211-399-wifi-mac80211-fix-cac-event-call-trace.patch
+#   （旧 func 集提档件，triage 时整组遗漏；主线 subsys 无等价修复已核实）
+# Reason: CAC 事件 call trace 修复
+# 档位：func（v1-safe 不含）
+diff --git a/net/wireless/mlme.c b/net/wireless/mlme.c
+index e336dd00..83a30cf9 100644
+--- a/net/wireless/mlme.c
++++ b/net/wireless/mlme.c
+@@ -1138,7 +1138,8 @@ void cfg80211_cac_event(struct net_device *netdev,
+ 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
+ 	unsigned long timeout;
+ 
+-	if (WARN_ON(wdev->valid_links &&
++	if (WARN_ON(event != NL80211_RADAR_CAC_ABORTED &&
++		    wdev->valid_links &&
+ 		    !(wdev->valid_links & BIT(link_id))))
+ 		return;
+ 
+-- 
+2.45.2
+
