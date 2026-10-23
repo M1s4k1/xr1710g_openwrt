@@ -188,7 +188,7 @@ new file mode 100644
 index 0000000..a224de1
 --- /dev/null
 +++ b/target/linux/airoha/patches-6.18/9999-31-net-airoha-npu-fix-watchdog-work-lifetime.patch
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,73 @@
 +# Source: YYH2913/openwrt target/linux/airoha/patches-6.18/924-net-airoha-npu-fix-watchdog-work-lifetime.patch
 +#   （Yanghan Ye, 2026-08-07, 6668b939）—— 2026-09-12 P3-A 吸收，#EXP
 +# Upstream: n/a（作者自持）
@@ -230,20 +230,6 @@ index 0000000..a224de1
 + static void airoha_npu_wdt_work(struct work_struct *work)
 + {
 + 	struct airoha_npu_core *core;
-+@@ -397,6 +410,13 @@ static void airoha_npu_wdt_work(struct work_struct *work)
-+ 		dev_err(npu->dev, "failed to restart NPU core %d\n", c);
-+ }
-+ 
-++static void airoha_npu_cancel_wdt_work(void *data)
-++{
-++	struct airoha_npu_core *core = data;
-++
-++	cancel_work_sync(&core->wdt_work);
-++}
-++
-+ static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
-+ {
-+ 	struct airoha_npu_core *core = core_instance;
 +diff --git a/include/linux/soc/airoha/airoha_offload.h b/include/linux/soc/airoha/airoha_offload.h
 +index 58fa2c7..ab2aee1 100644
 +--- a/include/linux/soc/airoha/airoha_offload.h

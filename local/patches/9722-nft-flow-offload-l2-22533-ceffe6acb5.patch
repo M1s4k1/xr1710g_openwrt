@@ -146,7 +146,7 @@ new file mode 100644
 index 0000000000..15c8049821
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/675-02-nft_flow_offload-bridge-offload-and-flowtable-type.patch
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,277 @@
 +--- a/net/netfilter/nf_flow_table_inet.c
 ++++ b/net/netfilter/nf_flow_table_inet.c
 +@@ -75,6 +75,8 @@
@@ -396,7 +396,9 @@ index 0000000000..15c8049821
 + 	switch (nft_pf(pkt)) {
 + 	case NFPROTO_IPV4:
 + 		fl.u.ip4.daddr = ct->tuplehash[dir].tuple.src.u3.ip;
-+@@ -266,9 +266,21 @@
++@@ -266,9 +266,23 @@
+++skip_l3:
+++
 + 	nft_default_forward_path(route, this_dst, dir);
 + 	nft_default_forward_path(route, other_dst, !dir);
 + 
