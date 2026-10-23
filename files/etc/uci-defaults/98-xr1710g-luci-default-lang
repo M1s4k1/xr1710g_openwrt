@@ -1,0 +1,12 @@
+#!/bin/sh
+# 98-xr1710g-luci-default-lang — 默认语言与主题初始化
+# 首次开机自动将 LuCI 界面语言设为中文（zh_cn）并保持 Argon 主题
+
+if [ "$PKG_UPGRADE" != 1 ]; then
+	uci batch <<-EOF
+		set luci.main.lang='zh_cn'
+		commit luci
+	EOF
+fi
+
+exit 0

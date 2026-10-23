@@ -1,0 +1,35 @@
+# files/etc/config/network — 默认网络（决策：主路由，WAN=10G-1，LAN=192.168.2.1）
+# 接口名 = dts openwrt,netdev-name（9001 补丁创建，9501 改为 YYH 命名）：
+#   eth1 = 10G-1（gdm2/phy8）→ WAN    eth2 = 10G-2（gdm4/phy5）→ LAN
+#   lan2 = 1G-1（gsw_port1）→ LAN     lan3 = 1G-2（gsw_port2）→ LAN
+# 与 YYH 固件 tag xr1710g_260831 实机命名一致（9501 补丁保证；本文件只需引用同一套名字）
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.2.1'            # 决策：LAN 网关（YYH 对齐，固定不变）
+	option netmask '255.255.255.0'
+	option ip6assign '60'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth2'                     # 10G-2（9501 后 10G-1 已改名 eth1 且归属 WAN，勿再加入桥）
+	list ports 'lan2'                     # 1G-1（9501 前是 10G-2；改名后 lan2 指 1G-1）
+	list ports 'lan3'                     # 1G-2（名称未变）
+
+config interface 'wan'
+	option device 'eth1'                  # 决策：WAN = 10G-1（YYH 命名；如走千兆上联改 lan2）
+	option proto 'dhcp'                   # DHCP 上网为主；PPPoE 在 LuCI 面板改（决策：占位不预置）
+
+config interface 'wan6'
+	option device 'eth1'
+	option proto 'dhcpv6'
+	option reqaddress 'try'
+	option reqprefix 'auto'
