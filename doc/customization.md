@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **11 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **12 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -156,6 +156,22 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
+
+### 12. build: restore Phase-2 LuCI apps + bridge-hw-offload in seed（2026-10-23）
+
+- **改动**（2 文件）：修改 `xr1710g-seed.config`（Phase 2 块）；本文档追加本条
+- **做了什么**：执行 Phase 2 恢复——NPU 栈已随 fork 移植完成，6 个包进 seed：
+  `bridge-hw-offload`（本仓库自有硬件卸载规则包）、`luci-app-mlo`、
+  `luci-app-w1700k-fancontrol`、`luci-app-airoha-npu`、`luci-app-airoha-flowsense`
+  （均在 `package/`，随 NPU/PPE commit 移植）、`luci-app-filemanager`
+  （luci feed 官方包，aggregate seed 原有、迁移时漏选，补回）
+- **背景**：用户在新固件上发现缺这些包（如 Web 无 MLO 配置页——包不带菜单/控制器）。
+  根因是 seed Phase 2 注释 + 迁移漏选；私有 feed（packages-xr1710g）是构建期
+  src-link 不进设备运行时仓库，故只能改 seed 重构建，不能 apk add
+- **未恢复**：`luci-app-airoha-recovery`——源码在 aggregate fanboy 19-pack，
+  未随移植跟来，已在 seed 内注明提取路径
+- **验证**：6 个符号激活、5 个自有包 Makefile 在场、filemanager 经 luci feed
+  API 确认存在（防 F164 kconfig 静默丢符号）；构建后需从 rootfs apk db 复核在位
 
 ### 11. docs: func-only tier decision（2026-10-23，docs commit）
 
