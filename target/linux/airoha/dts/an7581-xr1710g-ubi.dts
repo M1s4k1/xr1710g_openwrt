@@ -320,7 +320,7 @@
 
 	nvmem-cells = <&wan_mac 0>;
 	nvmem-cell-names = "mac-address";
-	openwrt,netdev-name = "lan1";	/* 10G-1（决策：LAN；WAN 走 1G-1） */
+	openwrt,netdev-name = "eth1";	/* 10G-1（YYH 兼容命名：WAN） */
 };
 
 &eth_pcs {
@@ -336,7 +336,7 @@
 
 	nvmem-cells = <&lan_mac 0>;
 	nvmem-cell-names = "mac-address";
-	openwrt,netdev-name = "lan2";	/* 10G-2 */
+	openwrt,netdev-name = "eth2";	/* 10G-2（YYH 兼容命名：LAN） */
 };
 
 &switch {
@@ -407,7 +407,7 @@
 
 &gsw_port1 {
 	status = "okay";
-	label = "wan";	/* 1G-1：WAN（决策；光猫千兆上联） */
+	label = "lan2";	/* 1G-1（YYH 兼容命名：LAN） */
 };
 
 &gsw_phy1_led0 {
