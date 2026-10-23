@@ -12,3 +12,4 @@ define Target/Description
 	Build firmware images for Airoha an7581 ARM based boards.
 endef
 
+DEFAULT_PACKAGES += bridge-hw-offload
