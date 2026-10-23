@@ -106,15 +106,10 @@ diff --git a/mt7996/main.c b/mt7996/main.c
 index c32e7819..f3fec548 100644
 --- a/mt7996/main.c
 +++ b/mt7996/main.c
-@@ -34,6 +34,16 @@ int mt7996_run(struct mt7996_phy *phy)
+@@ -34,6 +34,11 @@ int mt7996_run(struct mt7996_phy *phy)
  	if (ret)
  		return ret;
  
-+	ret = mt7996_mcu_set_tx_power_ctrl(phy, UNI_TXPOWER_SKU_POWER_LIMIT_CTRL,
-+					   phy->sku_limit_en);
-+	if (ret)
-+		return ret;
-+
 +	ret = mt7996_mcu_set_tx_power_ctrl(phy, UNI_TXPOWER_BACKOFF_POWER_LIMIT_CTRL,
 +					   phy->sku_path_en);
 +	if (ret)
@@ -135,7 +130,7 @@ index c0b9b1bf..bf66f6d2 100644
  #include "mt7996.h"
  #include "mcu.h"
  #include "mac.h"
-@@ -108,6 +109,242 @@ static bool sr_scene_detect = true;
+@@ -108,6 +109,243 @@ static bool sr_scene_detect = true;
  module_param(sr_scene_detect, bool, 0644);
  MODULE_PARM_DESC(sr_scene_detect, "Enable firmware scene detection algorithm");
  
@@ -160,6 +155,7 @@ index c0b9b1bf..bf66f6d2 100644
 + * Keep the backoff table private because older mt76 chipsets use a smaller
 + * connac2 path ABI.
 + */
++#define TX_POWER_LIMIT_TABLE_PATH	1
 +struct mt7996_power_path_limits {
 +	s8 cck[MT7996_SKU_PATH_CCK_LEN];
 +	s8 ofdm[MT7996_SKU_PATH_OFDM_LEN];
@@ -378,53 +374,6 @@ index c0b9b1bf..bf66f6d2 100644
  static u8
  mt7996_mcu_get_sta_nss(u16 mcs_map)
  {
-@@ -5404,9 +5641,46 @@ int mt7996_mcu_set_sniffer_mode(struct mt7996_phy *phy, bool enabled)
- 				 sizeof(req), true);
- }
- 
-+int mt7996_mcu_set_tx_power_ctrl(struct mt7996_phy *phy, u8 power_ctrl_id,
-+				 u8 data)
-+{
-+	struct mt7996_dev *dev = phy->dev;
-+	struct tx_power_ctrl req = {
-+		.tag = cpu_to_le16(power_ctrl_id),
-+		.len = cpu_to_le16(sizeof(req) - 4),
-+		.power_ctrl_id = power_ctrl_id,
-+		.band_idx = phy->mt76->band_idx,
-+	};
-+
-+	switch (power_ctrl_id) {
-+	case UNI_TXPOWER_SKU_POWER_LIMIT_CTRL:
-+		req.sku_enable = !!data;
-+		break;
-+	case UNI_TXPOWER_PERCENTAGE_CTRL:
-+		req.percentage_ctrl_enable = !!data;
-+		break;
-+	case UNI_TXPOWER_PERCENTAGE_DROP_CTRL:
-+		req.power_drop_level = data;
-+		break;
-+	case UNI_TXPOWER_BACKOFF_POWER_LIMIT_CTRL:
-+		req.bf_backoff_enable = !!data;
-+		break;
-+	case UNI_TXPOWER_ATE_MODE_CTRL:
-+		req.ate_mode_enable = !!data;
-+		break;
-+	default:
-+		req.sku_enable = !!data;
-+		break;
-+	}
-+
-+	return mt76_mcu_send_msg(&dev->mt76, MCU_WM_UNI_CMD(TXPOWER),
-+				 &req, sizeof(req), false);
-+}
-+
- int mt7996_mcu_set_txpower_sku(struct mt7996_phy *phy)
- {
- #define TX_POWER_LIMIT_TABLE_RATE	0
-+#define TX_POWER_LIMIT_TABLE_PATH	1
- 	struct mt7996_dev *dev = phy->dev;
- 	struct mt76_phy *mphy = phy->mt76;
- 	struct tx_power_limit_table_ctrl {
 @@ -5424,45 +5698,100 @@ int mt7996_mcu_set_txpower_sku(struct mt7996_phy *phy)
  		.power_limit_type = TX_POWER_LIMIT_TABLE_RATE,
  		.band_idx = phy->mt76->band_idx,
@@ -557,14 +506,12 @@ index 0d648852..7e9e106f 100644
  };
  
  struct mt7996_dev {
-@@ -775,6 +777,10 @@ int mt7996_mcu_get_chan_mib_info(struct mt7996_phy *phy, bool chan_switch);
+@@ -775,6 +777,8 @@ int mt7996_mcu_get_chan_mib_info(struct mt7996_phy *phy, bool chan_switch);
  int mt7996_mcu_get_temperature(struct mt7996_phy *phy);
  int mt7996_mcu_set_thermal_throttling(struct mt7996_phy *phy, u8 state);
  int mt7996_mcu_set_thermal_protect(struct mt7996_phy *phy, bool enable);
 +bool mt7996_has_power_path_limits(struct mt76_phy *mphy,
 +				  struct ieee80211_channel *chan);
-+int mt7996_mcu_set_tx_power_ctrl(struct mt7996_phy *phy, u8 power_ctrl_id,
-+				 u8 data);
  int mt7996_mcu_set_txpower_sku(struct mt7996_phy *phy);
  int mt7996_mcu_rdd_resume_tx(struct mt7996_phy *phy);
  int mt7996_mcu_rdd_cmd(struct mt7996_dev *dev, int cmd, u8 rdd_idx, u8 val);

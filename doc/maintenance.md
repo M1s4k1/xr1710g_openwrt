@@ -112,3 +112,26 @@ CI GNU patch（gpatch 2.8）全量验证暴露的失败，逐条在**真源**上
 - 若树未应用本地补丁集，各组 apply_set 全部"无补丁，跳过"⇒ 输出**"全部通过"——假绿**。
   已在脚本加 `_preflight` 守卫：树内无 9999x/98xx/dts/uboot 任一产物即 `die`。
   判据不用 `99*` 通配——上游 airoha 平台目录自带 17 个 99x 补丁（998/9990-9997 等）。
+
+### 7.3 编译级失败与符号重复定义（2026-10-23）
+
+源码级验证（补丁能应用）之后还有**编译级**关卡，CI func 首次进 make 后连败两次，
+各暴露一类新问题，均已修复并沉淀：
+
+| 失败 | 类别 | 根因 | 修复 |
+|---|---|---|---|
+| `nf_flow_table_path.c:307 error: label 'skip_l3' used but not defined` | 重锚不完整 | 9722/675-02 重锚时保留 `goto skip_l3` 丢了标签定义 | 对照原源 fanboy/06 补回标签（hunk 新侧 21→23） |
+| `airoha_npu.c:414 error: 'airoha_npu_cancel_wdt_work' defined but not used` | 删段副作用 | 删 9999-31 的调用方 hunk 4/5 时保留了函数定义 hunk 3 | 一并删除（9999-31 计数 87→73） |
+| `mcu.c:6161 error: redefinition of 'mt7996_mcu_set_tx_power_ctrl'` | **符号重复定义** | 主线 mt76@467ae2e 已吸收该函数（mcu.c + mt7996.h 声明 + main.c 第一处调用），9804 又加一份 | 9804 删函数定义 hunk、删 main.c 第一个调用（主线已有 hardcoded true）、删 mt7996.h 声明；`#define TX_POWER_LIMIT_TABLE_PATH` 移入常量 hunk（242→243） |
+
+**方法论**：
+
+1. **"补丁能应用"有三层关卡**：补丁应用（patch 语义）→ 源码结构自洽（标签配对、
+   函数有调用者）→ 编译（符号唯一、类型匹配）。verify-source-patches.sh 只覆盖第一层。
+2. **符号重复定义是新失败类别**：补丁新增的顶层符号（函数/结构体/宏）若主线已吸收
+   ⇒ 重定义编译错误。判定法：在**纯净主线**（不是 lazy clone 的假阴性！）grep 符号；
+   注意 `git clone --filter=blob:none --no-checkout` 的树 grep 会假阴性，须先 checkout。
+3. **删段时必须检查"定义-使用"配对**：删调用方时要连带删定义；反之删定义时要删调用。
+4. **hunk 上下文连续性**：GNU patch 要求 hunk 上文末行与下文首行在目标文件连续；
+   主线在两函数间插入新函数时，跨函数的新增 hunk 会 FAILED——此时应把新增内容
+   （如 #define）移到同函数的其他 hunk 或常量区，而不是硬保原 hunk。
