@@ -80,7 +80,14 @@ jobs:
           set -euo pipefail
           cd openwrt
           echo "::group::make 开始 $(date -u +%FT%TZ)"
-          make -j"$(( $(nproc) + 1 ))" || { echo "::error::make 失败"; exit 1; }
+          # V=s 输出编译命令与错误；tee 落盘，失败时由「上传构建日志」一并上传。
+          # 之前只跑 `make -j` 且无 V=s，GitHub 日志被折叠，编译错误进不了日志。
+          if ! make -j"$(( $(nproc) + 1 ))" V=s 2>&1 | tee build.log; then
+            echo "::error::make 失败（详见 buildlog-func/build.log 末尾）"
+            echo "===== build.log 末尾 80 行 ====="
+            tail -80 build.log
+            exit 1
+          fi
           echo "::endgroup::"
 
       - name: 收集产物清单
@@ -103,6 +110,7 @@ jobs:
           name: buildlog-func
           path: |
             openwrt/logs/**
+            openwrt/build.log
             artifacts-manifest.txt
           if-no-files-found: warn
 
