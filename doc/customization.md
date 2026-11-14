@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **12 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **13 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -115,7 +115,7 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 ├── feeds.conf                                 [A] 具体化 feeds.conf（default + src-link xr1710g）
 ├── xr1710g-seed.config                        [A] 设备/预装包选择（func 档）
 ├── xr1710g.md                                 [A] fork 结构与上游跟踪说明
-├── doc/                                       [A] 运营文档 9 篇（build/rules/audit/maintenance/
+├── doc/                                       [A] 运营文档 10 篇（build/rules/audit/maintenance/yyh-porting/
 │                                                   config-ownership/patch-review/handoff/
 │                                                   scripting/README + 本文档）
 ├── scripts/                                   [A] fetch-upstream.sh（拉上游 rebase）
@@ -171,6 +171,18 @@ SDK 栈再评估。
 
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
+
+### 13. doc: add YYH USXGMII porting assessment（2026-11-14）
+
+- **改动**（2 文件）：新增 `doc/yyh-usxgmii-porting.md`；`doc/README.md` 加索引；本文档追加本条
+- **做了什么**：调研并固化 WAN「carrier 正常但 TX 死」的修复来源与移植方案，尚未改构建代码
+- **背景**：2026-11-14 设备复现该故障（carrier=1/10G、RX 活、TX 死、DHCP 拿不到地址、
+  `ip link down/up` 重跑 AN 仍不恢复）。查到 `YYH2913/openwrt` 的
+  `xr1710g-6.18-integration` 分支已有整套修复（17 个补丁，`d45019449` 10-11 +
+  11-07 三个 commit），其 message 逐字描述同一故障；PR #26296 只有板级支持、不含修复
+- **结论**：我方缺 `pcs_link_up_complete` 机制链；PCS 基础补丁与 `703-02` 逐字节相同，
+  但 `634`/`9999-41` 的 phylink hunk 需人工重锚（实测 `git apply --check` 不通过）；
+  `9999-30..35` 与我方 NPU 系列编号撞车，需重编号。详见该文档 §4–§8
 
 ### 12. build: restore Phase-2 LuCI apps + bridge-hw-offload in seed（2026-10-23）
 
