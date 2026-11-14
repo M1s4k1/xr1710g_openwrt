@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **14 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **15 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -172,6 +172,18 @@ SDK 栈再评估。
 
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
+
+### 15. ci: capture full build log (V=s + tee) on make failure（2026-11-15）
+
+- **改动**（1 文件）：`.github/workflows/build.yml`
+- **做了什么**：给 make 加 `V=s` 与 `2>&1 | tee build.log`；失败时把 build.log
+  末尾 80 行打进 GitHub 日志并显式报错；`buildlog-func` artifact 增加
+  `openwrt/build.log`；清理重复的 `if-no-files-found` 键
+- **背景**：`43590793838` 在 `target/linux compile` 失败，但 GitHub 日志、
+  job 级与 run 级归档都只有 4213 行——make 阶段 44 分钟仅 78 行进度输出，
+  真实编译错误从未落盘（OpenWrt 无 `V=s` 时把子 make 输出重定向到文件）。
+  无法从日志判定失败原因，故先补可观测性再重跑
+- **影响**：不改动任何构建产物逻辑，仅日志采集
 
 ### 14. feat: import YYH USXGMII recovery chain（2026-11-14）
 
