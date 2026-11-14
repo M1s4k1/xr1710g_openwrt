@@ -1,0 +1,32 @@
+# Source: split from our 9992 (rdmitry PR#143 JCPLL recal) on 2026-11-15.
+# Upstream: n/a (fork-local wiring)
+# Reason: after importing YYH 620-629, airoha_pcs_config() returns restart_an
+#   and the an7581_pcs_eth match-data table gained new fields, so 9992's
+#   original hunks no longer matched and were being fuzzy-applied into the
+#   newly-added airoha_pcs_set_sgmii_speed() helper (where data/priv/index do
+#   not exist) -> CI 43636672531 build error 'data undeclared'. This patch
+#   wires post_config at the correct locations with exact context.
+
+diff --git a/drivers/net/pcs/airoha/pcs-airoha-common.c b/drivers/net/pcs/airoha/pcs-airoha-common.c
+--- a/drivers/net/pcs/airoha/pcs-airoha-common.c
++++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
+@@ -936,7 +936,11 @@
+ 	if (!initialized && interface == PHY_INTERFACE_MODE_1000BASEX &&
+ 	    neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
+ 		restart_an = true;
+ 
++	/* Anything that has to run after the lane is fully configured */
++	if (data->post_config)
++		data->post_config(priv, index, interface);
++
+ 	return restart_an;
+ }
+ 
+@@ -1609,6 +1613,7 @@ static const struct airoha_pcs_match_data an7581_pcs_eth = {
+ 	.alloc_regmap_fields = an7581_pcs_alloc_regmap_fields,
+ 	.bringup = an7581_pcs_bringup,
+ 	.rxlock_workaround = an7581_pcs_rxlock_workaround,
++	.post_config = an7581_pcs_jcpll_recal,
+ };
+ 
+ static const struct airoha_pcs_match_data an7581_pcs_pon = {

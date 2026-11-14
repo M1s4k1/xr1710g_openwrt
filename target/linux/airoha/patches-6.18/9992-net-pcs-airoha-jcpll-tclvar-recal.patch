@@ -3,6 +3,10 @@
 #   + out143.txt (devmem on W1700K: 0x1fa7a030 -> 0x1d links instantly, same-value
 #   rewrite keeps the lane dead).
 # Upstream: n/a (to be proposed once 10G peer link validation passes)
+# Note 2026-11-15: the pcs-airoha-common.c part was split out into
+#   9999-60 (post_config wiring) because YYH 620-629 rewrote config()'s tail
+#   and the match-data table; keeping it here caused fuzzy mis-application
+#   into airoha_pcs_set_sgmii_speed() -> 'data undeclared' build error.
 # Reason: JCPLL VCO band search re-runs only when TCLVAR is written while the PLL is
 #   enabled. Old 9029 re-wrote identical values after bringup = HW no-op. post_config
 #   hook (registered only by an7581_pcs_eth) fires at the end of airoha_pcs_config(),
@@ -26,6 +30,7 @@ nothing, so the value has to change; the code pulses 0x3 -> 0x5.
 Verified on a Gemtek W1700K: 5/5 link-ups at 10G with traffic flowing,
 where before the port never came up.
 
+diff --git a/drivers/net/pcs/airoha/pcs-an7581.c b/drivers/net/pcs/airoha/pcs-an7581.c
 --- a/drivers/net/pcs/airoha/pcs-an7581.c
 +++ b/drivers/net/pcs/airoha/pcs-an7581.c
 @@ -756,7 +756,13 @@
@@ -78,6 +83,7 @@ where before the port never came up.
  int an7581_pcs_usb_bringup(struct airoha_pcs_priv *priv,
  			   int index, phy_interface_t interface)
  {
+diff --git a/drivers/net/pcs/airoha/pcs-airoha.h b/drivers/net/pcs/airoha/pcs-airoha.h
 --- a/drivers/net/pcs/airoha/pcs-airoha.h
 +++ b/drivers/net/pcs/airoha/pcs-airoha.h
 @@ -1683,6 +1683,8 @@
@@ -110,24 +116,3 @@ where before the port never came up.
  #endif
  
  #ifdef CONFIG_PCS_AIROHA_AN7583
---- a/drivers/net/pcs/airoha/pcs-airoha-common.c
-+++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
-@@ -704,6 +704,10 @@
- 				AIROHA_PCS_XFI_TX_FC_EN | AIROHA_PCS_XFI_RX_FC_EN :
- 				0);
- 
-+	/* Anything that has to run after the lane is fully configured */
-+	if (data->post_config)
-+		data->post_config(priv, index, interface);
-+
- 	return 0;
- }
- 
-@@ -1393,6 +1397,7 @@
- 	.bringup = an7581_pcs_bringup,
- 	.link_up = an7581_pcs_phya_link_up,
- 	.rxlock_workaround = an7581_pcs_rxlock_workaround,
-+	.post_config = an7581_pcs_jcpll_recal,
- };
- 
- static const struct airoha_pcs_match_data an7581_pcs_pon = {

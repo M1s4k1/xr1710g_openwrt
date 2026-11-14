@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **15 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **18 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -173,7 +173,29 @@ SDK 栈再评估。
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
 
-### 15. ci: capture full build log (V=s + tee) on make failure（2026-11-15）
+### 18. fix: re-anchor 9992 post_config wiring after YYH PCS rework（2026-11-15）
+
+- **改动**：修改 `9992`（拆出 `pcs-airoha-common.c` 段、恢复正确 hunk 计数）；
+  新增 `9999-60-net-airoha-wire-post-config-after-config.patch`；
+  `doc/yyh-usxgmii-porting.md` §9 补失败与修复记录；本文档追加本条并修正 §2 编号
+- **修复**：CI `43636672531` 编译错误
+  `pcs-airoha-common.c:675 'data' undeclared / 'priv' / 'index'`。
+  根因：YYH 620–629 重写了 `airoha_pcs_config()` 尾部与 `an7581_pcs_eth`
+  match-data 表，我方 `9992` 的两个 hunk 上下文失效，被 `patch` fuzzy 匹配到
+  新插入的 `airoha_pcs_set_sgmii_speed()` helper 末尾（那里没有这些局部变量）
+- **做法**：把 `post_config` 接线拆成独立补丁 `9999-60`，用精确上下文锚到
+  `config()` 的 `restart_an` 尾部与 `alloc_regmap_fields` 表；`9992` 只保留
+  它能干净应用的两个文件段，并恢复其原有 hunk 计数（6/34、6/11）
+- **验证**：按 CI 真实顺序（`backport→pending→hack→platform`，`patch -f -p1`）
+  全序列 **681 个补丁零失败零 reject**；`post_config` 落在 `config()` 内、
+  `an7581_pcs_jcpll_recal` 定义存在、`set_sgmii_speed()` 内无残留
+
+### 17. doc: record workflow log-capture change（2026-11-15，SHA `bc16ec299d`）
+
+- **改动**（1 文件）：本文档追加记录
+- **做了什么**：补 `82b8edfb12` 漏掉的文档同步；2026-11-15 review 时重新编号
+
+### 16. ci: capture full build log (V=s + tee) on make failure（2026-11-15，SHA `82b8edfb12`）
 
 - **改动**（1 文件）：`.github/workflows/build.yml`
 - **做了什么**：给 make 加 `V=s` 与 `2>&1 | tee build.log`；失败时把 build.log
@@ -185,7 +207,7 @@ SDK 栈再评估。
   无法从日志判定失败原因，故先补可观测性再重跑
 - **影响**：不改动任何构建产物逻辑，仅日志采集
 
-### 14. feat: import YYH USXGMII recovery chain（2026-11-14）
+### 15. feat: import YYH USXGMII recovery chain（2026-11-14，SHA `1633686e6d`）
 
 - **改动**：新增 24 个内核补丁（620–624、625、628、629、630–634、745、746、
   9999-50..59）；删除 2 个等价旧补丁（我方 `625` rate-adaptation、`9994` SDK
@@ -211,23 +233,33 @@ SDK 栈再评估。
   `9999-30..42`→`9999-50..59`（避开我方 NPU `9999-30..35`）；详见移植文档 §9.1
 - **重锚**：仅 `9999-50` 两处 hunk 去掉 YYH 私有 `airoha_soe_teardown_netdev`
   上下文并校正行数；其余原样可用
-- **验证**：本地全序列 `patch -p1` apply（643 补丁）零 reject、FAIL 集合
-  比基线少 6 个且无新增；机制符号全部落地。编译待 CI
+- **验证**：本地全序列 `patch -p1` apply 零 reject、FAIL 集合与基线一致；
+  编译由 CI 验证（首次 `43590793838` 失败，见 #18 修复）
 
+### 14. doc: add YYH USXGMII porting assessment + source snapshot（2026-11-14，SHA `d9d5ed3082`）
 
-### 13. doc: add YYH USXGMII porting assessment（2026-11-14）
-
-- **改动**（2 文件）：新增 `doc/yyh-usxgmii-porting.md`；`doc/README.md` 加索引；本文档追加本条
-- **做了什么**：调研并固化 WAN「carrier 正常但 TX 死」的修复来源与移植方案，尚未改构建代码
-- **背景**：2026-11-14 设备复现该故障（carrier=1/10G、RX 活、TX 死、DHCP 拿不到地址、
-  `ip link down/up` 重跑 AN 仍不恢复）。查到 `YYH2913/openwrt` 的
+- **改动**（4 文件）：新增 `doc/yyh-usxgmii-porting.md`、
+  `doc/upstream/yyh-usxgmii/`（17 个补丁原文 + SOURCE.md）；`doc/README.md`
+  加索引；本文档追加本条
+- **做了什么**：调研并固化 WAN「carrier 正常但 TX 死」的修复来源与移植方案，
+  尚未改构建代码
+- **背景**：2026-11-14 设备复现该故障；查到 `YYH2913/openwrt` 的
   `xr1710g-6.18-integration` 分支已有整套修复（17 个补丁，`d45019449` 10-11 +
-  11-07 三个 commit），其 message 逐字描述同一故障；PR #26296 只有板级支持、不含修复
-- **结论**：我方缺 `pcs_link_up_complete` 机制链；PCS 基础补丁与 `703-02` 逐字节相同，
-  但 `634`/`9999-41` 的 phylink hunk 需人工重锚（实测 `git apply --check` 不通过）；
-  `9999-30..35` 与我方 NPU 系列编号撞车，需重编号。详见该文档 §4–§8
+  11-07 三个 commit），其 message 逐字描述同一故障；PR #26296 只有板级支持、
+  不含修复
+- **结论**：我方缺 `pcs_link_up_complete` 机制链；PCS 基础补丁与 `703-02`
+  逐字节相同，但 `634`/`9999-41` 的 phylink hunk 需人工重锚（实测
+  `git apply --check` 不通过）；`9999-30..35` 与我方 NPU 系列编号撞车
 
-### 12. build: restore Phase-2 LuCI apps + bridge-hw-offload in seed（2026-10-23）
+### 13. doc: review corrections（2026-10-23，SHA `44198f7401`）
+
+- **改动**：`doc/customization.md`（补丁数 21→24、9756 归宿、743 撞车、wifi7
+  决策、9991 文档债、§4 挂起事项表）；`doc/README.md` 索引
+- **做了什么**：2026-10-23 全项目 review 的修正落地；此 commit 是用户指定的
+  后续 review 起点
+- **注意**：此前 §2 编号把本条漏掉导致跳号，2026-11-15 review 时补正
+
+### 12. build: restore Phase-2 LuCI apps + bridge-hw-offload in seed（2026-10-23，SHA `b570b44d56`）
 
 - **改动**（2 文件）：修改 `xr1710g-seed.config`（Phase 2 块）；本文档追加本条
 - **做了什么**：执行 Phase 2 恢复——NPU 栈已随 fork 移植完成，6 个包进 seed：
@@ -235,26 +267,26 @@ SDK 栈再评估。
   `luci-app-w1700k-fancontrol`、`luci-app-airoha-npu`、`luci-app-airoha-flowsense`
   （均在 `package/`，随 NPU/PPE commit 移植）、`luci-app-filemanager`
   （luci feed 官方包，aggregate seed 原有、迁移时漏选，补回）
-- **背景**：用户在新固件上发现缺这些包（如 Web 无 MLO 配置页——包不带菜单/控制器）。
-  根因是 seed Phase 2 注释 + 迁移漏选；私有 feed（packages-xr1710g）是构建期
-  src-link 不进设备运行时仓库，故只能改 seed 重构建，不能 apk add
+- **背景**：用户在新固件上发现缺这些包（如 Web 无 MLO 配置页）。
+  根因是 seed Phase 2 注释 + 迁移漏选；私有 feed 是构建期 src-link 不进设备
+  运行时仓库，故只能改 seed 重构建，不能 apk add
 - **未恢复**：`luci-app-airoha-recovery`——源码在 aggregate fanboy 19-pack，
   未随移植跟来，已在 seed 内注明提取路径
 - **验证**：6 个符号激活、5 个自有包 Makefile 在场、filemanager 经 luci feed
-  API 确认存在（防 F164 kconfig 静默丢符号）；构建后需从 rootfs apk db 复核在位
+  API 确认存在（防 F164 kconfig 静默丢符号）；构建后 rootfs apk db 复核在位
 
-### 11. docs: func-only tier decision（2026-10-23，docs commit）
+### 11. docs: func-only tier decision（2026-10-23，SHA `8b4cf86443`，docs commit）
 
-> 注：最新一条 commit 的 SHA 存在“文档记录自身”的自引用循环，故本条不写 SHA，
-> 以“主题 + 日期”标识；历史条目的 SHA 均为定稿值，可用 `git log` 核对。
+> 注：最新一条 commit 的 SHA 存在「文档记录自身」的自引用循环，故本条不写 SHA，
+> 以「主题 + 日期」标识；历史条目的 SHA 均为定稿值，可用 `git log` 核对。
 
 - **改动**（3 文件）：修改 `xr1710g.md`（档位声明）、`doc/README.md`（文档代际说明）；
   本文档追加本条记录；顺带修正 #10 的 SHA 为 amend 后的定稿值 `f38b64e6f9`
-- **做了什么**：确立“fork 只保留 func 档”的决策，防止以后反复讨论 v1-safe
+- **做了什么**：确立「fork 只保留 func 档」的决策，防止以后反复讨论 v1-safe
 - **修复**：迁移文档（build/rules/audit/handoff）仍以叠加层时代口吻描述
   `manifest.rules` / `apply-patches.sh` / `profile=v1-safe` 等已不存在的机制——
   在 doc/README.md 顶部加代际说明，指清 fork 模式权威文档
-- **背景**：用户确认“只要 func 档，符合需求”。v1-safe 的 7 个补丁本就是 func 95 的
+- **背景**：用户确认「只要 func 档，符合需求」。v1-safe 的 7 个补丁本就是 func 95 的
   子集（板级最小集），func 镜像 + initramfs-recovery 兜底已覆盖首刷安全需求；
   fork 不设档位开关，`new_main` 即 func 全量
 

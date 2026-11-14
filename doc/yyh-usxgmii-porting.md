@@ -210,3 +210,41 @@ YYH 在 625 之前还有 `620–624` 五个 PCS 基础补丁（我方全缺）�
    观察 DHCP 是否保地址、双向流量是否都通
 3. 现场回归：`ifdown wan; ifup wan` / `ip link down/up` 后 TX 是否恢复
 4. `ethtool -S eth1` 应能出数（9999-57 补的私有统计）
+
+### 9.6 第一轮 CI 失败与修复（2026-11-15）
+
+| run | 结果 | 说明 |
+|---|---|---|
+| `43590793838` | ✗ `target/linux compile` | 日志无 `V=s`，真实错误不可见 → 触发 #16 workflow 改动 |
+| `43636672531` | ✗ `drivers/net/pcs/airoha/pcs-airoha-common.c:675: error: 'data' undeclared`（连带 `'priv'`/`'index'`） | 26MB `build.log` 定位到确切错误 |
+
+**根因**：我方 `9992`（rdmitry JCPLL recal）里有两个针对
+`pcs-airoha-common.c` 的 hunk——把 `data->post_config(priv, index, interface)`
+插入 `airoha_pcs_config()` 尾部、把 `.post_config = an7581_pcs_jcpll_recal`
+插入 `an7581_pcs_eth` match-data 表。YYH 620–629 重写了这两处（config 尾部
+改返回 `restart_an`、表里新增 `hibernation_workaround` 等字段），hunk 上下文
+失效；`patch` 用 fuzz 把第一个 hunk 匹配到**新插入的
+`airoha_pcs_set_sgmii_speed()` helper 末尾**——那里没有 `data/priv/index`
+局部变量，于是编译报未声明。第二个 hunk 则完全没落地，导致
+`post_config` 回调永远不会被调用（功能缺失）。
+
+**修复**：
+- 把这两个改动从 `9992` 拆出，成为独立补丁
+  `9999-60-net-airoha-wire-post-config-after-config.patch`，上下文精确锚到
+  `config()` 的 `if (!initialized && ...) restart_an = true;` 尾部与
+  `.alloc_regmap_fields = an7581_pcs_alloc_regmap_fields,` 表
+- `9992` 只保留它能干净应用的两个文件段，并恢复原有 hunk 计数
+  （`@@ -1935,6 +1941,34`、`@@ -1730,6 +1734,11`——中途误改过，已复原）
+- 给 9992 三个文件段补 `diff --git` 头，避免 `patch` 把段间第二个 hunk
+  当成新文件（"No file to patch"）
+
+**教训**：本地「补丁能 apply」不等于「apply 到正确位置」。`patch -f` 的 fuzz
+会把失效 hunk 塞进语义完全不对的函数里，且**不报错**。以后引入大批上游补丁后，
+除了验证零 reject，还要**检查关键新增代码落在预期函数内**（本次即靠
+CI 编译错误才发现）。
+
+**验证**（修复后）：按 CI 真实顺序
+`generic/backport-6.18 → generic/pending-6.18 → generic/hack-6.18 →
+airoha/patches-6.18`，`patch -f -p1` 全序列 **681 个补丁零失败零 reject**；
+`post_config` 调用位于 `config()` 内（940 行）、`.post_config` 赋值在
+1644 行、`an7581_pcs_jcpll_recal` 定义存在、`set_sgmii_speed()` 内无残留。
