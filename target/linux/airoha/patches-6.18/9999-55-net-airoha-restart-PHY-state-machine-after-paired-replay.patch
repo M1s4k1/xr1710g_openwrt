@@ -1,0 +1,47 @@
+# Source: YYH2913/openwrt branch xr1710g-6.18-integration
+#   original: target/linux/airoha/patches-6.18/9999-35-net-airoha-restart-PHY-state-machine-after-paired-replay.patch
+#   snapshot: doc/upstream/yyh-usxgmii/ (2026-11-14)
+# Upstream: RFC (see doc/yyh-usxgmii-porting.md); not submitted to openwrt main
+# Reason: WAN "carrier up but TX dead" after copper renegotiation on AN7581.
+#   YYH d45019449 (2026-10-11) describes the same failure. This patch is part of
+#   the phylink->PCS->MAC completion chain; see the porting doc for dependencies.
+# Renumbered from 9999-35-net-airoha-restart-PHY-state-machine-after-paired-replay.patch to avoid collision with our NPU series (9999-30..35).
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yanghan Ye <yyh94306@gmail.com>
+Date: Sun, 11 Oct 2026 09:20:00 -0700
+Subject: [PATCH] net: airoha restart PHY state machine after paired replay
+
+The paired USXGMII replay reinitializes the PHY while phylink remains
+running.  A successful PHY reset can leave phylib in NOLINK with the
+carrier already invalidated; the normal state-machine transition back to
+PHY_UP is then skipped, leaving the carrier down until an interface
+down/up.  Restart the PHY state machine after replay has been balanced,
+using the same public stop/start contract as a normal interface restart.
+
+This runs under RTNL and outside the PHY mutex.  It does not close the
+netdev or re-enter phylink while replay is disabled.
+
+Assisted-by: Codex:GPT-6-Astra
+Signed-off-by: Yanghan Ye <yyh94306@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/net/ethernet/airoha/airoha_eth.c b/drivers/net/ethernet/airoha/airoha_eth.c
+index 9e586c6..9f1f3c0 100644
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -4336,5 +4336,10 @@ static void airoha_usxgmii_recovery_work(struct work_struct *work)
+ 	/* Synchronize PHY state before balancing replay on PHY errors or recovery. */
+ 	phylink_replay_link_end(dev->phylink);
++	if (!ret) {
++		/* Restart polling as a normal PHY stop/start cycle would. */
++		phy_stop(phy);
++		phy_start(phy);
++	}
+ 	WRITE_ONCE(dev->usxgmii_recovery_running, false);
+ 	if (ret)
+ 		netdev_err(netdev, "USXGMII paired PHY replay failed: %d\n", ret);
+-- 
+2.43.0

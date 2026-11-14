@@ -2,7 +2,9 @@
 
 > 目标：把 `YYH2913/openwrt` 的 `xr1710g-6.18-integration` 分支中针对
 > **"carrier 正常但 TX 死"** 的补丁集合入本 fork（`new_main`）。
-> 本文档是**评估与方案**，尚未改仓库；执行前需逐阶段验证。
+>
+> **状态（2026-11-14 更新）：已合入，见 §9。** 原来的分阶段方案（§6）与
+> 风险判断（§7）保留作决策记录；实际的编号方案与验证结果见 §9。
 
 ## 1. 问题与来源
 
@@ -142,3 +144,69 @@
 2. 补丁固化位置（`doc/upstream/` vs `local/reference/`）
 3. 重编号方案（`9999-50+` / `9998-*`）确认
 4. `625` 语义冲突：保留我方版本 / 换成 YYH 版 / 合并
+
+
+---
+
+## §9 实际执行记录（2026-11-14）
+
+### 9.1 编号方案（避免撞车）
+
+决定：把 YYH 的机制链按**原编号段**对齐，只有冲突段整体挪号。
+
+| 段 | 原编号 | 新编号 | 理由 |
+|---|---|---|---|
+| PCS 基础层 | `620–624`、`628`、`629`（我方原缺） | **原号保留** | 625/630–634 依赖其上下文，必须按 YYH 顺序 |
+| | `625` align-link-modes-with-SDK | **625（原号，替换我方旧 625）** | 按用户规则「YYH 更新则换」；旧版归档 `REPLACED-our-625.patch` |
+| | 我方 `625` USXGMII-rate-adaptation | **删除** | 等价物由 `620` 提供（同一 Ryan Chen 补丁） |
+| | 我方 `9994` SDK-crossing-RX-calibration | **删除** | 等价物由 `628` 提供（同源 YYH e61a1bb）；归档 `REPLACED-our-9994.patch` |
+| PCS 恢复链 | `630–634` | **原号保留** | 我方无占用；换 625 后上下文对齐 |
+| Realtek PHY | `744-03/04` | **745 / 746** | 避开我方 `744`，保证排在其后 |
+| MAC replay | `9999-30..36` | **9999-50..56** | 避开我方 NPU 系列 `9999-30..35` |
+| pause / stats | `9999-40/41/42` | **9999-57 / 58 / 59** | 与 replay 段连续，避开 NPU 段 |
+
+我方 `9992`（rdmitry JCPLL TCLVAR 重校准）**保留**——它改的是 jcpll bringup/post_config
+区域，与 620–624 不重叠，实测无冲突。
+
+### 9.2 关键发现：625 不是孤立补丁
+
+YYH 在 625 之前还有 `620–624` 五个 PCS 基础补丁（我方全缺）：
+`620` 引入 `airoha_pcs_set_usxgmii_speed()` helper（= 我方旧 625）、
+`621` 避免 link up 重置 TXPCS、`622` 引入 `port->initialized`、
+`623` 校准算法修正、`624` TXPLL regmap 字段。625 的 hunk 依赖这些前置状态。
+只换 625 会导致 2 个 hunk 失败，并连锁破坏 631/633/634/9999-59。
+**整段 620–629 一起引入后，PCS 链全部干净通过。**
+
+### 9.3 重锚工作（仅 1 个补丁）
+
+- `9999-50`（原 `9999-30`）的两个 hunk 引用 `airoha_soe_teardown_netdev()`
+  （YYH 私有 SOE/XFRM offload 框架，我方没有）。删除该上下文行并校正
+  hunk 计数（旧侧 6→5、新侧 7→6）后通过。
+- 其余补丁（含原先担心的 `634` phylink 部分）在换 625 + 引入 620–629 后
+  **原样可用，无需重锚**。此前 "634 需人工重锚" 的判断是基于未引入基础层
+  的测试环境，实际不成立。
+
+### 9.4 验证结果（本地全序列 apply）
+
+方法：解压 `linux-6.18.55.tar.xz`，按 OpenWrt 构建顺序
+（`generic/hack-6.18`→`pending`→`backport`→`airoha/patches-6.18`）
+用 `patch -p1 --batch --forward --fuzz=2` 应用全部补丁（与
+`scripts/patch-kernel.sh` 的 `patch -f -p1` 一致）。
+
+| 项 | 结果 |
+|---|---|
+| 本次新增/替换的所有补丁 | **零 reject、零失败** ✓ |
+| FAIL 集合与改动前基线对比 | 改动前 42 → 改动后 **36**；少的 6 个正是原先失败的本次补丁，无新增失败 ✓ |
+| 剩余 36 个 FAIL | 全部是基线原有的通用补丁（mxl862xx / SFP / MHI 等），与本改动无关 |
+| 机制符号落地 | `pcs_link_up_complete`、`mac_link_up_pending`、`mac_reset_pending`、`phylink_replay_link_begin`、`airoha_usxgmii_recovery_work`、`airoha_pcs_set_sgmii_speed`、`airoha_ethtool_get_pauseparam` 全部存在 ✓ |
+
+> 说明：本地用 `patch` 顺序模拟能验证「补丁能否干净应用」，但**不能替代编译**。
+> 编译由 CI 构建完成；若编译报错需按报错回到对应补丁调整。
+
+### 9.5 待验证（真机）
+
+1. CI 构建通过后刷机
+2. 受控复现（YYH 的验证法）：WAN 10G↔5G↔2.5G 速率往返 3 次，
+   观察 DHCP 是否保地址、双向流量是否都通
+3. 现场回归：`ifdown wan; ifup wan` / `ip link down/up` 后 TX 是否恢复
+4. `ethtool -S eth1` 应能出数（9999-57 补的私有统计）

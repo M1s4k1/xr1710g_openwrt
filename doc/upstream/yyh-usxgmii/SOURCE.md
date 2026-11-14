@@ -11,10 +11,15 @@
   - `9e44788d7` (2026-11-07) `airoha: apply resolved pause settings on AN7581` → 9999-42
 - **原始路径**：`target/linux/airoha/patches-6.18/<文件名>`
 
-本目录仅作来源固化与离线对比，**不参与构建**。真正合入时按
-`doc/yyh-usxgmii-porting.md` 的重编号与重锚方案，把补丁放进
-`target/linux/airoha/patches-6.18/`（或对 phylink 的部分放进
-`target/linux/generic/backport-6.18/`）。
+**状态（2026-11-14）：已合入 `target/linux/airoha/patches-6.18/`，编号方案见
+`doc/yyh-usxgmii-porting.md` §9.1。** 本目录仍保留原文快照用于离线对比。
+
+除上表 17 个补丁外，2026-11-14 追加固化了 7 个 PCS 基础层补丁
+（`620`/`621`/`622`/`623`/`624`/`628`/`629`）——它们是我方原先缺失、
+但 625 与 630–634 依赖的前置状态。
+
+`REPLACED-our-625.patch` / `REPLACED-our-9994.patch` 是被 YYH 等价版替换掉的
+我方旧补丁，留作审计凭证。
 
 注意：YYH 的 `9999-30..35` 是 USXGMII replay 系列，与本仓库同编号的
 **NPU 恢复系列完全不同**，切勿直接覆盖。

@@ -7,7 +7,7 @@
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **13 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **14 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -32,7 +32,8 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 │   │   ├── an7581-xr1710g-ubi.dts            [A] XR1710G 设备树入口（含 mainline an7581.dtsi）
 │   │   │                                           解决：上游只有 an7581 通用 DTSI，无整机 DTS
 │   │   └── an7581.dtsi                       [M] NPU 内存保留区、hwrng 时钟顺序
-│   └── patches-6.18/                          内核补丁 24 个（详见下方清单）
+│   └── patches-6.18/                          我方内核补丁 24 → 48 个（2026-11-14 合入
+│                                                   YYH USXGMII 机制链 24 个，详见 §2 #14）
 │                                                   注：9756-9046-fix-992-20-context 的效果已
 │                                                   烘焙进 992-20（无独立文件，见 §2 #5）
 │
@@ -115,7 +116,7 @@ openwrt-fork（相对 openwrt 上游的全部定制）
 ├── feeds.conf                                 [A] 具体化 feeds.conf（default + src-link xr1710g）
 ├── xr1710g-seed.config                        [A] 设备/预装包选择（func 档）
 ├── xr1710g.md                                 [A] fork 结构与上游跟踪说明
-├── doc/                                       [A] 运营文档 10 篇（build/rules/audit/maintenance/yyh-porting/
+├── doc/                                       [A] 运营文档 11 篇（build/rules/audit/maintenance/yyh-porting/upstream/
 │                                                   config-ownership/patch-review/handoff/
 │                                                   scripting/README + 本文档）
 ├── scripts/                                   [A] fetch-upstream.sh（拉上游 rebase）
@@ -171,6 +172,36 @@ SDK 栈再评估。
 
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
+
+### 14. feat: import YYH USXGMII recovery chain（2026-11-14）
+
+- **改动**：新增 24 个内核补丁（620–624、625、628、629、630–634、745、746、
+  9999-50..59）；删除 2 个等价旧补丁（我方 `625` rate-adaptation、`9994` SDK
+  crossing RX calibration，归档至 `doc/upstream/yyh-usxgmii/REPLACED-*`）；
+  快照目录补 7 个基础层原文；更新移植文档 §9
+- **做了什么**：把 YYH2913/openwrt `xr1710g-6.18-integration` 针对
+  「carrier 正常但 TX 死」的**整条 phylink→PCS→MAC 机制链**合入 new_main：
+  - 基础层 `620–624/628/629`：helper/per-port state/校准/TXPLL/TX FIR
+  - `625` 换 YYH 版（用户规则：YYH 更新则换）；其无条件调用
+    `airoha_pcs_set_usxgmii_speed()` 已覆盖我方旧版修复语义
+  - `630–634`：AN 完成门控、速率变化 relink、**link down 复位 port MAC logic**、
+    复位推迟到 link up、新增 `pcs_link_up_complete` 完成回调（MAC fragment
+    就绪后才清 STOP 放数据）
+  - `745/746`：flow_s 恢复独占、上报 RTL826x 实际协商速率
+  - `9999-50..56`：MAC 侧 paired PHY/PCS replay + 收口
+  - `9999-57`：`ethtool -S` 私有统计（解决现场 "no stats available"）
+  - `9999-58/59`：最终 pause 传入 completion、错误在 carrier 发布前上抛、
+    AN7581 应用 resolved pause 并清 STOP 位
+- **修复**：WAN 铜缆重新协商后「carrier=1/10G、RX 活、TX 死、只有重启恢复」
+  （YYH `d45019449` 的 commit message 逐字描述该故障，根因是
+  PCS link-down 路径不复位 port MAC logic）
+- **编号方案**：PCS 段保原号、Realtek 段 `744-03/04`→`745/746`、
+  `9999-30..42`→`9999-50..59`（避开我方 NPU `9999-30..35`）；详见移植文档 §9.1
+- **重锚**：仅 `9999-50` 两处 hunk 去掉 YYH 私有 `airoha_soe_teardown_netdev`
+  上下文并校正行数；其余原样可用
+- **验证**：本地全序列 `patch -p1` apply（643 补丁）零 reject、FAIL 集合
+  比基线少 6 个且无新增；机制符号全部落地。编译待 CI
+
 
 ### 13. doc: add YYH USXGMII porting assessment（2026-11-14）
 

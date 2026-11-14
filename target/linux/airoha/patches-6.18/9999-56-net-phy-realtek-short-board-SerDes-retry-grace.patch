@@ -1,0 +1,41 @@
+# Source: YYH2913/openwrt branch xr1710g-6.18-integration
+#   original: target/linux/airoha/patches-6.18/9999-36-net-phy-realtek-short-board-SerDes-retry-grace.patch
+#   snapshot: doc/upstream/yyh-usxgmii/ (2026-11-14)
+# Upstream: RFC (see doc/yyh-usxgmii-porting.md); not submitted to openwrt main
+# Reason: WAN "carrier up but TX dead" after copper renegotiation on AN7581.
+#   YYH d45019449 (2026-10-11) describes the same failure. This patch is part of
+#   the phylink->PCS->MAC completion chain; see the porting doc for dependencies.
+# Renumbered from 9999-36-net-phy-realtek-short-board-SerDes-retry-grace.patch to avoid collision with our NPU series (9999-30..35).
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yanghan Ye <yyh94306@gmail.com>
+Date: Sun, 11 Oct 2026 10:05:00 -0700
+Subject: [PATCH] net: phy: realtek shorten board SerDes retry grace
+
+The XR1710G board opts into the RTK flow_s recovery state machine.  After
+the Airoha paired USXGMII replay, the first flow_s pulse can leave copper
+link up while the in-band carrier remains down.  Waiting for the generic
+120-second grace window delays recovery and blocks LAN DHCP.  Retry the
+board-specific flow_s pulse after five PHY polls so the paired replay can
+recover within seconds while preserving the existing state machine and
+its carrier checks.
+
+Assisted-by: Codex:GPT-6-Astra
+Signed-off-by: Yanghan Ye <yyh94306@gmail.com>
+---
+ drivers/net/phy/realtek/realtek_main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/net/phy/realtek/realtek_main.c b/drivers/net/phy/realtek/realtek_main.c
+index 9f8cb9f..e6a0ad3 100644
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -26,5 +26,5 @@
+ 
+ /* Let the HZ-driven PCS poll observe the new in-band word before retrying. */
+-#define RTL826X_RTK_SERDES_CARRIER_GRACE_POLLS	120
++#define RTL826X_RTK_SERDES_CARRIER_GRACE_POLLS	5
+ 
+ #define RTL8201F_IER				0x13
+-- 
+2.43.0
