@@ -1,13 +1,13 @@
 # customization.md — XR1710G fork 定制清单与提交史
 
-> **本文档的维护铁律（强制）**：每一次向 `new_main` 的 commit，**必须同步更新本文档**：
+> **本文档的维护铁律（强制）**：每一次向 `main` 的 commit，**必须同步更新本文档**：
 > 1. 文件清单有增减/路径变化 → 更新 §1 对应条目；
 > 2. 追加 §2 的 commit 记录（改了什么文件、做了什么、修复/新增了什么）。
 >
 > 漏更新的 commit 应在发现时立即补一条修订记录，不允许出现"树里有改动但文档无记录"的状态。
 > 核对面：`git log 63f702f1c0..HEAD`（基线为 openwrt 上游 pin）应与 §2 一一对应。
 
-基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **18 个 commit**，
+基线：openwrt `63f702f1c0`（Linux 6.18.55）。我方累计 **19 个 commit**，
 相对上游 **247 个文件、+39381 行**（截至 2026-10-23）。
 
 ---
@@ -172,6 +172,25 @@ SDK 栈再评估。
 
 > 记录规则：每条 = 一个 commit（新→旧排列）；含 commit 短 SHA、主题、改动文件摘要、
 > 做了什么、修复/新增了什么。括号内为合并前的原始 commit 主题。
+> 注：#1–#18 记录中出现的 `new_main` 是当时的分支名；2026-11-15 起统一为 `main`，
+> 历史条目保留原文不改写。
+
+### 19. chore: rename new_main to main, retire old main/dev（2026-11-15）
+
+- **改动**（4 文件）：`xr1710g.md`、`scripts/fetch-upstream.sh`（默认分支变量
+  `new_main`→`main`）、`doc/customization.md`（铁律/档位/挂起表/本条）、
+  `doc/yyh-usxgmii-porting.md`
+- **做了什么**：把 GitHub 上 `new_main` 重命名为 `main` 并设为默认分支；
+  删除旧 `main`（9 月 aggregate，`2aadb4b86`，9 个独有 commit）和
+  `dev`（叠加层时代，`13b59c411`，61 个独有 commit）；本地分支同步改名并重新
+  跟踪 `origin/main`
+- **保护**：删除前把两个旧分支归档为 tag
+  `archive/main-2026-09-20`、`archive/dev-2026-10-23`，历史随时可找回
+- **前置核对**：无分支保护规则、无 open PR、`.github/workflows/build.yml`
+  为纯 `workflow_dispatch`（不含分支名硬编码），故删除分支不影响 CI
+- **结果**：远程仅剩 `main`（`06c82f8bca`），默认分支 `main`，本地 `main`
+  跟踪 `origin/main` 且同 SHA
+- **注**：§2 历史记录中出现的 `new_main` 为当时分支名，保留原文不改写
 
 ### 18. fix: re-anchor 9992 post_config wiring after YYH PCS rework（2026-11-15）
 
@@ -288,7 +307,7 @@ SDK 栈再评估。
   在 doc/README.md 顶部加代际说明，指清 fork 模式权威文档
 - **背景**：用户确认「只要 func 档，符合需求」。v1-safe 的 7 个补丁本就是 func 95 的
   子集（板级最小集），func 镜像 + initramfs-recovery 兜底已覆盖首刷安全需求；
-  fork 不设档位开关，`new_main` 即 func 全量
+  fork 不设档位开关，`main` 即 func 全量
 
 ### 10. `f38b64e6f9` doc: add customization.md (custom file inventory + commit history)
 
@@ -430,5 +449,5 @@ commit 并同步缩减本文档，即为"修改量逐渐降低"的可量化体�
 | `luci-app-airoha-recovery` | **挂起** | 源码在 aggregate fanboy 19-pack，未跟来；seed 内已注明提取路径 |
 | `luci-app-netspeedtest` | **不启用** | 19-pack 有、aggregate seed 也未选；与 ttyd 场景重叠，无移植计划 |
 | `9991` 补丁注释引用不存在的 `docs/FIXES.md` | 待补文档 | 补丁内容有效（RX stats 修复），仅注释债 |
-| GitHub 默认分支仍为 `main`（9 月旧 aggregate） | 待用户决策 | 建议改为 `new_main`；用户未定前不动 |
-| WAN TX 死锁（carrier 恢复后 TX 单向死，仅重启可恢复） | 修复中 | 诊断计划已定（换 new_main 固件后 `ethtool -S` 二分断点 → mdio/devmem 定位）；补丁编号预分配 9999-36 |
+| ~~GitHub 默认分支仍为旧 aggregate~~ | **已完成 2026-11-15** | `new_main` 重命名为 `main`，删除旧 `main`/`dev`；旧历史归档为 tag `archive/main-2026-09-20`、`archive/dev-2026-10-23` |
+| WAN TX 死锁（carrier 恢复后 TX 单向死） | 修复已合入 · 待真机验证 | YYH USXGMII 机制链已合入，`43641987273` 编译通过；待刷机后做速率往返验证（清单见仓库外 `flash-verify-43641987273.md`） |

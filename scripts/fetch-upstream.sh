@@ -3,7 +3,7 @@
 #
 # 语义（2026-10-23 架构转向：fork 模式）：
 #   上游 = git remote "upstream"（openwrt/openwrt）
-#   我方 = new_main 分支上的 XR1710G commit（板级支持/NPU 栈/mt76/杂项）
+#   我方 = main 分支上的 XR1710G commit（板级支持/NPU 栈/mt76/杂项）
 #   更新 = git rebase upstream/main ⇒ 冲突即"需适配的 patch"
 #
 # 为什么 rebase 而不是 merge：保持我方 commit 紧跟上游线性历史，
@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BR="${XR1710G_BRANCH:-new_main}"
+BR="${XR1710G_BRANCH:-main}"
 DO_REBASE=1
 [[ "${1:-}" == "--no-rebase" ]] && DO_REBASE=0
 [[ "${1:-}" == "--abort" ]] && { git rebase --abort; echo "已放弃本次 rebase"; exit 0; }
